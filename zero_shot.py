@@ -8,6 +8,7 @@ import torch
 import evaluate
 from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
+import numpy as np
 
 os.environ['CUDA_VISIBLE_DEVICES'] = '1,2'
 
@@ -20,7 +21,7 @@ def create_parser():
     """Create an argument parser for the script."""
     parser = argparse.ArgumentParser(description="Zero-shot evaluation script for GSM8K dataset.")
 
-    parser.add_argument('--metric', type=str, choices=['accuracy', 'bleu', 'rouge'], required=False,
+    parser.add_argument('--metric', type=str, choices=['accuracy', 'bleu', 'rouge', 'bert'], required=False,
                         help="Evaluation metric to use. Default is 'accuracy'.")
     
     parser.add_argument('--sample', type=bool, default=False,
@@ -161,7 +162,7 @@ def evaluate_bleu(model, tokenizer, device, gsm8k_test):
     # Prepare prompts and gold answers
     for ex in gsm8k_test:
         question = ex['question']
-        answer = extract_answer_hf(ex['answer'])
+        answer = ex['answer']
         prompts.append(f"Question: {question}\nAnswer:")
         gold_answers.append(answer)
 
@@ -219,12 +220,49 @@ def evaluate_rouge(gsm8k_test):
     results = rouge_metric.compute(predictions=predictions, references=references)
     return results
 
+def evaluate_bert(model, tokenizer, device, gsm8k_test):
+    """
+    Evaluate the BERT score of the model on the GSM8K dataset.
+    """
+    bert_metric = evaluate.load("bertscore")
+
+    predictions = []
+    references = []
+
+    total = len(gsm8k_test)
+    prompts = []
+    gold_answers = []
+
+    # Prepare prompts and gold answers
+    for ex in gsm8k_test:
+        question = ex['question']
+        answer = extract_answer_hf(ex['answer'])
+        prompts.append(f"Question: {question}\nAnswer:")
+        gold_answers.append(answer)
+
+    for i in tqdm(range(0, total, BATCH_SIZE), desc="Evaluating BERT"):
+        batch_prompts = prompts[i:i + BATCH_SIZE]
+        batch_answers = gold_answers[i:i + BATCH_SIZE]
+
+        # Generate answers for the batch
+        responses = generate_answer(model, tokenizer, batch_prompts)
+
+        for response, reference in zip(responses, batch_answers):
+            pred = response
+            if pred is not None:
+                predictions.append(str(pred))
+                references.append(str(reference))
+
+    # Compute BERT score
+    results = bert_metric.compute(predictions=predictions, references=references, lang="en")
+    return results
+
 if __name__ == "__main__":
     parser = create_parser()
     args = parser.parse_args()
 
-    if args.metric not in ['accuracy', 'bleu', 'rouge'] and not args.sample:
-        print(f"Invalid metric: {args.metric}. Choose either 'accuracy', 'bleu', or 'rouge'.")
+    if args.metric not in ['accuracy', 'bleu', 'rouge', 'bert'] and not args.sample:
+        print(f"Invalid metric: {args.metric}. Choose either 'accuracy', 'bleu', 'rouge', or 'bert'.")
         exit()
 
     # Load the model and tokenizer
@@ -257,3 +295,8 @@ if __name__ == "__main__":
             print("ROUGE evaluation completed.")
             for k, v in results.items():
                 print(f"{k}: {v:.4f}")
+        case 'bert':
+            results = evaluate_bert(model, tokenizer, device, gsm8k_test)
+            print("BERT evaluation completed.")
+            for k, v in results.items():
+                print(f"{k}: {np.mean(v):.4f}")
