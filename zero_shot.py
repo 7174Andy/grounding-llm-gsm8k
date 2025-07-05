@@ -17,9 +17,10 @@ BATCH_SIZE = 8
 ANS_RE = re.compile(r"#### (\-?[0-9\.\,]+)")
 
 def create_parser():
+    """Create an argument parser for the script."""
     parser = argparse.ArgumentParser(description="Zero-shot evaluation script for GSM8K dataset.")
 
-    parser.add_argument('--metric', type=str, choices=['accuracy', 'bleu'], required=False, 
+    parser.add_argument('--metric', type=str, choices=['accuracy', 'bleu', 'rouge'], required=False,
                         help="Evaluation metric to use. Default is 'accuracy'.")
     
     parser.add_argument('--sample', type=bool, default=False,
@@ -187,12 +188,43 @@ def evaluate_rouge(gsm8k_test):
     """
     rouge_metric = evaluate.load("rouge")
 
+    predictions = []
+    references = []
+
+    total = len(gsm8k_test)
+    prompts = []
+    gold_answers = []
+
+    # Prepare prompts and gold answers
+    for ex in gsm8k_test:
+        question = ex['question']
+        answer = extract_answer_hf(ex['answer'])
+        prompts.append(f"Question: {question}Answer the question step by step. At the end, give your final numeric answer in the format '#### answer'.\nAnswer:")
+        gold_answers.append(answer)
+
+    for i in tqdm(range(0, total, BATCH_SIZE), desc="Evaluating ROUGE"):
+        batch_prompts = prompts[i:i + BATCH_SIZE]
+        batch_answers = gold_answers[i:i + BATCH_SIZE]
+
+        # Generate answers for the batch
+        responses = generate_answer(model, tokenizer, batch_prompts)
+
+        for response, reference in zip(responses, batch_answers):
+            pred = response
+            if pred is not None:
+                predictions.append(str(pred))
+                references.append(str(reference))
+
+    # Compute ROUGE score
+    results = rouge_metric.compute(predictions=predictions, references=references)
+    return results
+
 if __name__ == "__main__":
     parser = create_parser()
     args = parser.parse_args()
 
-    if args.metric not in ['accuracy', 'bleu'] and not args.sample:
-        print(f"Invalid metric: {args.metric}. Choose either 'accuracy' or 'bleu'.")
+    if args.metric not in ['accuracy', 'bleu', 'rouge'] and not args.sample:
+        print(f"Invalid metric: {args.metric}. Choose either 'accuracy', 'bleu', or 'rouge'.")
         exit()
 
     # Load the model and tokenizer
@@ -211,11 +243,17 @@ if __name__ == "__main__":
     # Evaluate the model's accuracy
     # Change to whatever evaluation metric you want to use
     print(f"Starting evaluation using metric: {args.metric}")
-    if args.metric == 'accuracy':
-        results = evaluate_accuracy(model, tokenizer, device, gsm8k_test)
-        print("Accuracy evaluation completed.")
-        print(f"Accuracy: {results:.4f}")
-    else:
-        results = evaluate_bleu(model, tokenizer, device, gsm8k_test)
-        print("BLEU evaluation completed.")
-        print(f"BLEU score: {results:.4f}")
+    match args.metric:
+        case 'accuracy':
+            results = evaluate_accuracy(model, tokenizer, device, gsm8k_test)
+            print("Accuracy evaluation completed.")
+            print(f"Accuracy: {results:.4f}")
+        case 'bleu':
+            results = evaluate_bleu(model, tokenizer, device, gsm8k_test)
+            print("BLEU evaluation completed.")
+            print(f"BLEU score: {results:.4f}")
+        case 'rouge':
+            results = evaluate_rouge(gsm8k_test)
+            print("ROUGE evaluation completed.")
+            for k, v in results.items():
+                print(f"{k}: {v:.4f}")
