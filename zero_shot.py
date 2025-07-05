@@ -2,6 +2,7 @@ import os
 from tqdm import tqdm
 import re
 import argparse
+from pathlib import Path
 
 import torch
 import evaluate
@@ -18,9 +19,12 @@ ANS_RE = re.compile(r"#### (\-?[0-9\.\,]+)")
 def create_parser():
     parser = argparse.ArgumentParser(description="Zero-shot evaluation script for GSM8K dataset.")
 
-    parser.add_argument('--metric', type=str, choices=['accuracy', 'bleu'], 
+    parser.add_argument('--metric', type=str, choices=['accuracy', 'bleu'], required=False, 
                         help="Evaluation metric to use. Default is 'accuracy'.")
     
+    parser.add_argument('--sample', type=bool, default=False,
+                        help="If True, generates samples from the model. Default is False.")
+
     return parser
 
 def setup_model():
@@ -70,13 +74,31 @@ def extract_answer_hf(completion):
     else:
         return None
 
-# Function to generate answers using the model
-def generate_answer(prompts):
+# Function to generate answers using the model in a batch
+def generate_answer(model, tokenizer, prompts):
     """ Generate answers for a batch of prompts using the model. """
     inputs = tokenizer(prompts, return_tensors="pt", padding=True, truncation=True).to(model.device)
     outputs = model.generate(**inputs, max_new_tokens=512)
     responses = tokenizer.batch_decode(outputs, skip_special_tokens=True)
     return responses
+
+def generate_samples(model, tokenizer, device, gsm8k_test, len=10):
+    """
+    Generate samples from the model for the GSM8K dataset.
+    """
+
+    # Prepare prompts and gold answers
+    with open("gsm8k_zero_shot_samples.txt", "w") as f:
+        for idx in tqdm(range(len)):
+            question = gsm8k_test[idx]['question']
+            inputs = tokenizer(question, return_tensors="pt", padding=True, truncation=True).to(device)
+            outputs = model.generate(**inputs, max_new_tokens=512)
+            response = tokenizer.decode(outputs[0], skip_special_tokens=True)
+            
+            f.write("----------------------\n")
+            f.write(f"Question: {question}\n")
+            f.write(f"Response: {response}\n\n")
+            f.write("----------------------\n")
 
 def evaluate_accuracy(model, tokenizer, device, gsm8k_test):
     """
@@ -103,7 +125,7 @@ def evaluate_accuracy(model, tokenizer, device, gsm8k_test):
         batch_answers = gold_answers[i:i + BATCH_SIZE]
 
         # Generate answers for the batch
-        responses = generate_answer(batch_prompts)
+        responses = generate_answer(model, tokenizer, batch_prompts)
 
         for response, reference in zip(responses, batch_answers):
             pred = extract_final_number(response)
@@ -147,10 +169,10 @@ def evaluate_bleu(model, tokenizer, device, gsm8k_test):
         batch_answers = gold_answers[i:i + BATCH_SIZE]
 
         # Generate answers for the batch
-        responses = generate_answer(batch_prompts)
+        responses = generate_answer(model, tokenizer, batch_prompts)
 
         for response, reference in zip(responses, batch_answers):
-            pred = extract_final_number(response)
+            pred = response
             if pred is not None:
                 predictions.append(str(pred))
                 references.append(str(reference))
@@ -159,11 +181,17 @@ def evaluate_bleu(model, tokenizer, device, gsm8k_test):
     results = bleu_metric.compute(predictions=predictions, references=[[ref] for ref in references])
     return results['bleu']
 
+def evaluate_rouge(gsm8k_test):
+    """
+    Evaluate the Rouge score of the model on the GSM8K dataset.
+    """
+    rouge_metric = evaluate.load("rouge")
+
 if __name__ == "__main__":
     parser = create_parser()
     args = parser.parse_args()
 
-    if args.metric not in ['accuracy', 'bleu']:
+    if args.metric not in ['accuracy', 'bleu'] and not args.sample:
         print(f"Invalid metric: {args.metric}. Choose either 'accuracy' or 'bleu'.")
         exit()
 
@@ -172,6 +200,13 @@ if __name__ == "__main__":
     tokenizer, model, device = setup_model()
     print("Model setup complete.")
     gsm8k_test = load_dataset("gsm8k", "main", split="test")
+
+    # Generate samples if requested
+    if args.sample:
+        print("Generating samples...")
+        generate_samples(model, tokenizer, device, gsm8k_test)
+        print("Sample generation completed.")
+        exit()
 
     # Evaluate the model's accuracy
     # Change to whatever evaluation metric you want to use
