@@ -42,7 +42,7 @@ def setup_model():
     print(f"Loading model {MODEL_ID} with dtype {torch_dtype}")
 
     try:
-        tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True, padding_slide="left")
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True, padding_side="left")
         model = AutoModelForCausalLM.from_pretrained(
             MODEL_ID,
             torch_dtype=torch_dtype,
