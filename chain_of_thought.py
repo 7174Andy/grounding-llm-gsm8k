@@ -10,10 +10,10 @@ from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import numpy as np
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '1,2'
+os.environ['CUDA_VISIBLE_DEVICES'] = '1,7'
 
 # Configuration
-MODEL_ID = "Qwen/Qwen2-7B-Instruct"
+MODEL_ID = "google/gemma-2-9b-it"
 BATCH_SIZE = 8
 ANS_RE = re.compile(r"#### (\-?[0-9\.\,]+)")
 
@@ -93,16 +93,23 @@ def generate_samples(model, tokenizer, device, gsm8k_test, len=10):
     Generate samples from the model for the GSM8K dataset.
     """
     # Prepare prompts and gold answers
-    with open("gsm8k_zero_shot_samples_qwen2.txt", "w") as f:
+    file_name = MODEL_ID.replace("/", "_")
+    with open(f"gsm8k_chain_of_thought_samples_{file_name}.txt", "w") as f:
         for idx in tqdm(range(len)):
-            question = gsm8k_test[idx]['question']
+            question = gsm8k_test[idx]['question'] + " Answer the question step by step."
+            correct_solution = gsm8k_test[idx]['answer']
+            correct_solution_number = extract_answer_hf(correct_solution)
             inputs = tokenizer(question, return_tensors="pt", truncation=True).to(device)
             outputs = model.generate(**inputs, max_new_tokens=512)
             response = tokenizer.decode(outputs[0], skip_special_tokens=True)
+            correct = extract_final_number(response) == correct_solution_number
             
             f.write("----------------------\n")
-            f.write(f"Question: {question} Answer the question step by step.\n")
+            f.write(f"Question: {question}\n")
             f.write(f"Response: {response}\n\n")
+            f.write(f"Correct Solution: {correct_solution}\n")
+            f.write(f"Correct Solution Number: {correct_solution_number}\n")
+            f.write(f"Correct: {correct}\n")
             f.write("----------------------\n")
 
 def evaluate_accuracy(model, tokenizer, device, gsm8k_test):
@@ -355,7 +362,7 @@ if __name__ == "__main__":
         case 'all':
             results = evaluate_all(model, tokenizer, device, gsm8k_test_sample)
             print("All evaluations completed.")
-            print(f"BLEU: {results['bleu']}")
+            print(f"BLEU: {results['bleu']:.4f}")
             for k, v in results['rouge'].items():
                 print(f"ROUGE-{k}: {v:.4f}")
             print(f"BERT Precision: {np.mean(results['bert']['precision']):.4f}")

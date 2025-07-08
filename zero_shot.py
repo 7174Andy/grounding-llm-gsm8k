@@ -13,7 +13,7 @@ import numpy as np
 os.environ['CUDA_VISIBLE_DEVICES'] = '1,2'
 
 # Configuration
-MODEL_ID = "Qwen/Qwen2-7B-Instruct"
+MODEL_ID = "google/gemma-2-9b-it"
 BATCH_SIZE = 8
 ANS_RE = re.compile(r"#### (\-?[0-9\.\,]+)")
 
@@ -93,16 +93,23 @@ def generate_samples(model, tokenizer, device, gsm8k_test, len=10):
     Generate samples from the model for the GSM8K dataset.
     """
     # Prepare prompts and gold answers
-    with open("gsm8k_zero_shot_samples_qwen2.txt", "w") as f:
+    file_name = MODEL_ID.replace("/", "_")
+    with open(f"gsm8k_zero_shot_samples_{file_name}.txt", "w") as f:
         for idx in tqdm(range(len)):
             question = gsm8k_test[idx]['question']
+            correct_solution = gsm8k_test[idx]['answer']
+            correct_solution_number = extract_answer_hf(correct_solution)
             inputs = tokenizer(question, return_tensors="pt", truncation=True).to(device)
             outputs = model.generate(**inputs, max_new_tokens=512)
             response = tokenizer.decode(outputs[0], skip_special_tokens=True)
+            correct = extract_final_number(response) == correct_solution_number
             
             f.write("----------------------\n")
             f.write(f"Question: {question}\n")
             f.write(f"Response: {response}\n\n")
+            f.write(f"Correct Solution: {correct_solution}\n")
+            f.write(f"Correct Solution Number: {correct_solution_number}\n")
+            f.write(f"Correct: {correct}\n")
             f.write("----------------------\n")
 
 def evaluate_accuracy(model, tokenizer, device, gsm8k_test):
@@ -122,7 +129,7 @@ def evaluate_accuracy(model, tokenizer, device, gsm8k_test):
     for ex in gsm8k_test:
         question = ex['question']
         answer = extract_answer_hf(ex['answer'])
-        prompts.append(f"Question: {question} At the end, give your final numeric answer in the format '#### answer'.\nAnswer:")
+        prompts.append(f"Question: {question}  At the end, give your final numeric answer in the format '#### answer'.\nAnswer:")
         gold_answers.append(answer)
 
     for i in tqdm(range(0, total, BATCH_SIZE), desc="Evaluating Accuracy"):
@@ -355,7 +362,7 @@ if __name__ == "__main__":
         case 'all':
             results = evaluate_all(model, tokenizer, device, gsm8k_test_sample)
             print("All evaluations completed.")
-            print(f"BLEU: {results['bleu']}")
+            print(f"BLEU: {results['bleu']:.4f}")
             for k, v in results['rouge'].items():
                 print(f"ROUGE-{k}: {v:.4f}")
             print(f"BERT Precision: {np.mean(results['bert']['precision']):.4f}")
