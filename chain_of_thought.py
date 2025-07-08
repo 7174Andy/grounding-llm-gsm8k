@@ -13,7 +13,7 @@ import numpy as np
 os.environ['CUDA_VISIBLE_DEVICES'] = '1,7'
 
 # Configuration
-MODEL_ID = "google/gemma-2-9b-it"
+MODEL_ID = "Qwen/Qwen2-7B-Instruct"
 BATCH_SIZE = 8
 ANS_RE = re.compile(r"#### (\-?[0-9\.\,]+)")
 

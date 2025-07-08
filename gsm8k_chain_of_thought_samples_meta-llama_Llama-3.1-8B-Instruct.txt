@@ -250,7 +250,7 @@ Toulouse has twice as many sheep as Charleston, which is 2 * 80 sheep = <<2*80=1
 Together, the three has 20 sheep + 160 sheep + 80 sheep = <<20+160+80=260>>260 sheep
 #### 260
 Correct Solution Number: 260
-Correct: False
+Correct: True
 ----------------------
 ----------------------
 Question: Carla is downloading a 200 GB file. Normally she can download 2 GB/minute, but 40% of the way through the download, Windows forces a restart to install updates, which takes 20 minutes. Then Carla has to restart the download from the beginning. How load does it take to download the file? Answer the question step by step.
