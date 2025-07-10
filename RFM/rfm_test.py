@@ -80,14 +80,14 @@ if __name__ == "__main__":
 
     prompt = "Janet’s ducks lay 16 eggs per day. She eats three for breakfast every morning and bakes muffins for her friends every day with four. She sells the remainder at the farmers' market daily for $2 per fresh duck egg. How much in dollars does she make every day at the farmers' market? Answer the question step by step."
     formatted_prompt = controller.format_prompt(prompt)
-    coef = 0.2
+    coef = 0.3
     layers = list(range(-1, -31, -1))
 
     controlled_output = controller.generate(
         formatted_prompt,
         layers_to_control=layers,
         control_coef=coef,
-        max_new_tokens=256,
+        max_new_tokens=512,
     )
 
     print(f"Controlled output: {controlled_output}")
