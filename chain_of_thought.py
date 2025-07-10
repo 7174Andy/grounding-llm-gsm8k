@@ -2,7 +2,6 @@ import os
 from tqdm import tqdm
 import re
 import argparse
-from pathlib import Path
 
 import torch
 import evaluate
