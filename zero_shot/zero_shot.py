@@ -116,7 +116,6 @@ def evaluate_accuracy(model, tokenizer, device, gsm8k_test):
     """
     Evaluate the accuracy of the model on the GSM8K dataset.
     """
-    accuracy_metric = evaluate.load("accuracy")
 
     predictions = []
     references = []

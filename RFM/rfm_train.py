@@ -1,11 +1,12 @@
 import os
-import random
 
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from neural_controllers import NeuralController
 from datasets import load_dataset
 import numpy as np
+
+os.environ['CUDA_VISIBLE_DEVICES'] = '3,4'
 
 RANDOM_SEED = 42
 MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
@@ -66,8 +67,7 @@ if __name__ == "__main__":
     controller = NeuralController(
         model=model,
         tokenizer=tokenizer,
-        batch_size=2,
-        n_components=5,
+        n_components=1,
         control_method='rfm',
     )
 
@@ -78,16 +78,10 @@ if __name__ == "__main__":
     # Compute concept vectors
     controller.compute_directions(dataset_inputs, dataset_labels)
 
-    prompt = "Janet’s ducks lay 16 eggs per day. She eats three for breakfast every morning and bakes muffins for her friends every day with four. She sells the remainder at the farmers' market daily for $2 per fresh duck egg. How much in dollars does she make every day at the farmers' market? Answer the question step by step."
-    formatted_prompt = controller.format_prompt(prompt)
-    coef = 0.3
-    layers = list(range(-1, -31, -1))
+    # Save controller state
+    filename = './rfm_gsm8k_meta-llama/Llama-3.1-8B-Instruct.pkl'
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
+    controller.save(concept="gsm8k", model_name=MODEL_ID)
 
-    controlled_output = controller.generate(
-        formatted_prompt,
-        layers_to_control=layers,
-        control_coef=coef,
-        max_new_tokens=512,
-    )
-
-    print(f"Controlled output: {controlled_output}")
+    print(f"Controller state saved to {filename}")
+    print("Training complete.")
