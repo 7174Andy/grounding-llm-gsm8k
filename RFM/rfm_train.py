@@ -8,18 +8,18 @@ import numpy as np
 
 os.environ['CUDA_VISIBLE_DEVICES'] = '3,4'
 
-RANDOM_SEED = 42
-MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
+RANDOM_SEED = 44
+MODEL_ID = "google/gemma-2-9b-it"
 
 def prepare_dataset(gsm8k_dataset, controller):
-    sampled_dataset = gsm8k_dataset.shuffle(seed=RANDOM_SEED).select(range(1000))
+    sampled_dataset = gsm8k_dataset.shuffle(seed=RANDOM_SEED).select(range(3000))
 
     # Binary classification: 0 = original question, 1 = CoT-augmented
     training_dataset = [
         {'prompt': controller.format_prompt(ex['question']), 'label': 0} for ex in sampled_dataset
     ]
     training_dataset += [
-        {'prompt': controller.format_prompt(ex['question']) + "Please think through your reasonsing step by step before answering.", 'label': 1}
+        {'prompt': controller.format_prompt(ex['question']) + "Please think through your reasoning step by step before answering.", 'label': 1}
         for ex in sampled_dataset
     ]
 
@@ -67,7 +67,7 @@ if __name__ == "__main__":
     controller = NeuralController(
         model=model,
         tokenizer=tokenizer,
-        n_components=1,
+        n_components=3,
         control_method='rfm',
     )
 

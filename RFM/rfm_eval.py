@@ -5,11 +5,12 @@ from neural_controllers import NeuralController
 from datasets import load_dataset
 import numpy as np
 from tqdm import tqdm
+import evaluate
 
 from rfm_train import setup_model
 
 RANDOM_SEED = 42
-MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
+MODEL_ID = "google/gemma-2-9b-it"
 ANS_RE = re.compile(r"#### (\-?[0-9\.\,]+)")
 
 def extract_final_number(text):
@@ -34,7 +35,7 @@ def extract_reference_answer(completion):
     else:
         return None
 
-def evaluate_accuracy(model, tokenizer, gsm8k_test, controller):
+def evaluate_accuracy(gsm8k_test, controller):
     """
     Evaluate the accuracy of the model on the GSM8K dataset.
     """
@@ -58,10 +59,11 @@ def evaluate_accuracy(model, tokenizer, gsm8k_test, controller):
         batch_answers = gold_answers[i]
 
         # Generate answers for the batch 
-        response = controller.generate(prompt, max_length=512, control_coef=0.2, layers_to_control=list(range(-1, -31, -1)))
-
+        response = controller.generate(prompt, max_new_tokens=256, control_coef=0.2, layers_to_control=list(range(-1, -31, -1)))
+        print(response)
 
         pred = extract_final_number(response)
+        print(f"Prediction for example {i + 1}: {pred}")
         if pred is not None:
             predictions.append(pred)
             references.append(batch_answers)
@@ -81,10 +83,68 @@ def evaluate_accuracy(model, tokenizer, gsm8k_test, controller):
     accuracy = correct / len(predictions)
     return accuracy
 
+def evaluate_all(gsm8k_test, controller):
+    """
+    Evaluate the model on the GSM8K dataset using the controller.
+    """
+    bleu_metric = evaluate.load("bleu")
+    rouge_metric = evaluate.load("rouge")
+    bert_metric = evaluate.load("bertscore")
+
+    predictions = []
+    references = []
+
+    total = len(gsm8k_test)
+    prompts = []
+    gold_answers = []
+
+    # Prepare prompts and gold answers
+    for ex in gsm8k_test:
+        question = ex['question']
+        answer = ex['answer']
+        prompts.append(f"Question: {question} Answer the question step by step.\nAnswer:")
+        gold_answers.append(answer)
+    
+    for i in tqdm(range(0, total), desc="Evaluating RFM..."):
+        prompt = controller.format_prompt(prompts[i])
+        batch_answers = gold_answers[i]
+
+        # Generate answers for the batch 
+        response = controller.generate(prompt, max_new_tokens=256, control_coef=0.2, layers_to_control=list(range(-1, -31, -1)))
+        print(response)
+
+        pred = response.strip()
+        print(f"Prediction for example {i + 1}: {pred}")
+        if pred:
+            predictions.append(pred)
+            references.append(batch_answers)
+        else:
+            print(f"Warning: No valid prediction for example {i + 1}")
+        
+    # Filter out None values
+    filtered = [(p, r) for p, r in zip(predictions, references) if p is not None and r is not None]
+    if not filtered:
+        print("No valid prediction-reference pairs found.")
+        exit()
+
+    predictions, references = zip(*filtered)
+
+    # Compute BLEU score
+    bleu_score = bleu_metric.compute(predictions=predictions, references=references)
+    print(f"RFM BLEU Score: {bleu_score['bleu']:.4f}")
+
+    # Compute ROUGE score
+    rouge_score = rouge_metric.compute(predictions=predictions, references=references)
+    print(f"RFM ROUGE Score: {rouge_score['rouge1']:.4f}")
+
+    # Compute BERTScore
+    bert_score = bert_metric.compute(predictions=predictions, references=references, lang="en")
+    print(f"RFM BERTScore: {np.mean(bert_score['f1']):.4f}")
+
 if __name__ == "__main__":
     # Load the GSM8K dataset
     dataset = load_dataset('gsm8k', 'main', split='test')
-    gsm8k_test_sample = dataset.shuffle(seed=42).select(range(132))
+    gsm8k_test_sample = dataset.shuffle(seed=RANDOM_SEED).select(range(132))
 
     # Set up the model and tokenizer
     tokenizer, model, device = setup_model()
@@ -93,7 +153,7 @@ if __name__ == "__main__":
     controller = NeuralController(
         model=model,
         tokenizer=tokenizer,
-        n_components=1,
+        n_components=3,
         control_method='rfm',
     )
 
@@ -108,5 +168,8 @@ if __name__ == "__main__":
     layers_to_control = list(range(-1, -31, -1))
     
     # Evaluate accuracy
-    accuracy = evaluate_accuracy(model, tokenizer, gsm8k_test_sample, controller)
+    accuracy = evaluate_accuracy(gsm8k_test_sample, controller)
     print(f"RFM Accuracy on GSM8K: {accuracy:.4f}")
+
+    # Evaluate all metrics
+    evaluate_all(gsm8k_test_sample, controller)
