@@ -43,8 +43,6 @@ def setup_model():
 
     try:
         tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
         model = AutoModelForCausalLM.from_pretrained(
             MODEL_ID,
             torch_dtype=torch_dtype,

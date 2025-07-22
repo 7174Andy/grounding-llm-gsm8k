@@ -1,4 +1,6 @@
 import re
+import os
+import torch
 
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from neural_controllers import NeuralController
@@ -8,6 +10,8 @@ from tqdm import tqdm
 import evaluate
 
 from rfm_train import setup_model
+
+os.environ['CUDA_VISIBLE_DEVICES'] = '5,7'
 
 RANDOM_SEED = 42
 MODEL_ID = "google/gemma-2-9b-it"
@@ -35,7 +39,7 @@ def extract_reference_answer(completion):
     else:
         return None
 
-def evaluate_accuracy(gsm8k_test, controller):
+def evaluate_accuracy(gsm8k_test, controller, processor):
     """
     Evaluate the accuracy of the model on the GSM8K dataset.
     """
@@ -58,8 +62,9 @@ def evaluate_accuracy(gsm8k_test, controller):
         prompt = controller.format_prompt(prompts[i])
         batch_answers = gold_answers[i]
 
-        # Generate answers for the batch 
-        response = controller.generate(prompt, max_new_tokens=256, control_coef=0.2, layers_to_control=list(range(-1, -31, -1)))
+        # Generate answers for the batch
+        control_layers = list(range(-1, -41, -1)) # Control the last 40 layers
+        response = controller.generate(prompt, max_new_tokens=256, control_coef=0.2, layers_to_control=control_layers, do_sample=False, logits_processor=[processor])
         print(response)
 
         pred = extract_final_number(response)
@@ -83,7 +88,7 @@ def evaluate_accuracy(gsm8k_test, controller):
     accuracy = correct / len(predictions)
     return accuracy
 
-def evaluate_all(gsm8k_test, controller):
+def evaluate_all(gsm8k_test, controller, processor):
     """
     Evaluate the model on the GSM8K dataset using the controller.
     """
@@ -109,12 +114,12 @@ def evaluate_all(gsm8k_test, controller):
         prompt = controller.format_prompt(prompts[i])
         batch_answers = gold_answers[i]
 
-        # Generate answers for the batch 
-        response = controller.generate(prompt, max_new_tokens=256, control_coef=0.2, layers_to_control=list(range(-1, -31, -1)))
+        # Generate answers for the batch
+        control_layers = list(range(-1, -41, -1))
+        response = controller.generate(prompt, max_new_tokens=256, control_coef=0.2, layers_to_control=control_layers, do_sample=False, logits_processor=[processor])
         print(response)
 
         pred = response.strip()
-        print(f"Prediction for example {i + 1}: {pred}")
         if pred:
             predictions.append(pred)
             references.append(batch_answers)
@@ -149,27 +154,34 @@ if __name__ == "__main__":
     # Set up the model and tokenizer
     tokenizer, model, device = setup_model()
 
+    eos_token_id = tokenizer.eos_token_id
+
+    class SuppressEosLogitsProcessor(torch.nn.Module):
+        def __call__(self, input_ids, scores):
+            scores[:, eos_token_id] = -1e10
+            return scores
+
     # Load the controller
     controller = NeuralController(
         model=model,
         tokenizer=tokenizer,
         n_components=3,
         control_method='rfm',
+        rfm_iters=8,
     )
 
     # Load the controller state
-    filename = './rfm_gsm8k_meta-llama/Llama-3.1-8B-Instruct.pkl'
+    filename = './rfm_gsm8k_google/gemma-2-9b-it.pkl'
     controller.load(concept="gsm8k", model_name=MODEL_ID)
 
     print(f"Controller loaded from {filename}")
 
     # Prepare the dataset
     dataset_inputs = [ex['question'] for ex in dataset]
-    layers_to_control = list(range(-1, -31, -1))
     
     # Evaluate accuracy
-    accuracy = evaluate_accuracy(gsm8k_test_sample, controller)
+    accuracy = evaluate_accuracy(gsm8k_test_sample, controller, processor=SuppressEosLogitsProcessor())
     print(f"RFM Accuracy on GSM8K: {accuracy:.4f}")
 
     # Evaluate all metrics
-    evaluate_all(gsm8k_test_sample, controller)
+    # evaluate_all(gsm8k_test_sample, controller, processor=SuppressEosLogitsProcessor())
