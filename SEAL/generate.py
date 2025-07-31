@@ -12,7 +12,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 import numpy as np
 
 MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
-os.environ['CUDA_VISIBLE_DEVICES'] = "5,6"  # Adjust based on your available GPUs'
+os.environ['CUDA_VISIBLE_DEVICES'] = "0,6"  # Adjust based on your available GPUs'
 
 def trim_output(output):
     instruction_prefix = "Answer the following question"
@@ -29,7 +29,6 @@ def main():
     random.seed(42)
 
     # Prepare dataset
-    print("Loading Data...")
     test_data = []
     data = load_dataset("gsm8k", "main", split="test")
     data = data.shuffle(seed=42).select(range(1000))  # Use a subset for testing
@@ -59,7 +58,6 @@ def main():
         prompts.append(prompt)
 
     # Generate answers
-    print("Generating answers...")
     torch_dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8 else torch.float32
 
     model = AutoModelForCausalLM.from_pretrained(
@@ -71,16 +69,10 @@ def main():
         )
     
     inputs = tokenizer(prompts, return_tensors="pt", padding=True, truncation=True).to(model.device)
-    outputs = model.generate(**inputs, max_new_tokens=256, do_sample=False, pad_token_id=tokenizer.eos_token_id)
+    generated_tokens = model.generate(**inputs, max_new_tokens=256, do_sample=False, pad_token_id=tokenizer.eos_token_id)
+    decoded_outputs = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
 
-    result = []
-    for output in outputs:
-        attempts = []
-        for ith_output in output.outputs:
-            attempts.append(ith_output.text)
-        result.append(attempts)
-
-    outputs = [[trim_output(o) for o in output] for output in result]
+    outputs = [[trim_output(o) for o in output] for output in decoded_outputs]
 
     predictions = [{
         "prompt": prompt,
@@ -88,7 +80,7 @@ def main():
         "answer": example["gt"],
         "solution":  example["answer"],
         "model_generation": output,
-    } for example, output, prompt in zip(test_data, outputs, prompts)]
+    } for example, output, prompt in tqdm(zip(test_data, outputs, prompts), desc="Creating predictions", total=len(test_data))]
 
     with open(os.path.join("SEAL", f"{MODEL_ID}_SEAL", "predictions.json"), "w") as f:
         for prediction in predictions:
