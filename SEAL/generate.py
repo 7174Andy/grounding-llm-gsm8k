@@ -12,7 +12,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 import numpy as np
 
 MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
-os.environ['CUDA_VISIBLE_DEVICES'] = "0,6"  # Adjust based on your available GPUs'
+os.environ['CUDA_VISIBLE_DEVICES'] = "2,6"  # Adjust based on your available GPUs'
 
 def trim_output(output):
     instruction_prefix = "Answer the following question"
@@ -68,11 +68,20 @@ def main():
             trust_remote_code=True,
         )
     
+    print("Model loaded successfully.")
     inputs = tokenizer(prompts, return_tensors="pt", padding=True, truncation=True).to(model.device)
-    generated_tokens = model.generate(**inputs, max_new_tokens=256, do_sample=False, pad_token_id=tokenizer.eos_token_id)
-    decoded_outputs = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+    generated_tokens = model.generate(**inputs, max_new_tokens=512, do_sample=False, pad_token_id=tokenizer.eos_token_id)
 
-    outputs = [[trim_output(o) for o in output] for output in decoded_outputs]
+    print("Generation completed.")
+    input_lengths = [len(x) for x in inputs['input_ids']]
+
+    decoded_outputs = []
+    for i, output in enumerate(generated_tokens):
+        gen_only = output[input_lengths[i]:]
+        text = tokenizer.decode(gen_only, skip_special_tokens=True)
+        decoded_outputs.append(text)
+
+    outputs = [trim_output(output) for output in decoded_outputs]
 
     predictions = [{
         "prompt": prompt,
@@ -82,7 +91,13 @@ def main():
         "model_generation": output,
     } for example, output, prompt in tqdm(zip(test_data, outputs, prompts), desc="Creating predictions", total=len(test_data))]
 
-    with open(os.path.join("SEAL", f"{MODEL_ID}_SEAL", "predictions.json"), "w") as f:
+    # Make output directory
+    model_name_for_dir = MODEL_ID.split("/")[-1]
+    output_dir = os.path.join(f"{model_name_for_dir}_SEAL")
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Record predictions to the desired output directory
+    with open(os.path.join(output_dir, "baseline_predictions.json"), "w") as f:
         for prediction in predictions:
             f.write(json.dumps(prediction) + "\n")
 
