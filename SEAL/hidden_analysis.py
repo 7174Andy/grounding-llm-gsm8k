@@ -52,7 +52,7 @@ def generate(data, save_dir):
     vocab = tokenizer.get_vocab()
     split_id = [vocab[token] for token in vocab.keys() if "ĊĊ" in token]
 
-    prompts = [d["prompt"]+d["response"] for d in data]
+    prompts = [d["prompt"]+d["model_generation"] for d in data]
 
     layer_num = model.config.num_hidden_layers+1
     hidden_dict=[{} for _ in range(layer_num)]
@@ -65,7 +65,7 @@ def generate(data, save_dir):
             hidden_states = output.hidden_states
             hidden_states = [h.detach().cpu() for h in hidden_states]
         layer_num = len(hidden_states)
-        step_index, check_index, switch_index = generate_index(p, tokenizer, split_id, think_only=think_only)
+        step_index, check_index, switch_index = generate_index(p, tokenizer, split_id, think_only=False)
         step_index = torch.LongTensor(step_index)
         check_index = torch.LongTensor(check_index)
         switch_index = torch.LongTensor(switch_index)
@@ -82,13 +82,12 @@ def extract_data(input_file):
     data = []
     with open(input_file, "r", encoding="utf-8") as f:
         for line in f:
-            if line.strip():
-                data.append(json.loads(line.strip()))
+            if line.strip():  # skip blank lines
+                data.append(json.loads(line))
     return data
-
 def main():
-    input_file = "./SEAL_extracted_thoughts_llama.txt"
-    save_dir = "./SEAL/hidden_analysis"
+    input_file = "./Llama-3.1-8B-Instruct_SEAL/baseline_predictions.json"
+    save_dir = "./hidden_analysis"
     
     print("Extracting data from input file...")
     data = extract_data(input_file)
@@ -97,3 +96,6 @@ def main():
     generate(data, save_dir)
     
     print(f"Hidden states saved to {save_dir}/hidden.pt and prompts saved to {save_dir}/prompts.json")
+
+if __name__ == "__main__":
+    main()

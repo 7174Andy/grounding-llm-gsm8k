@@ -12,7 +12,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 import numpy as np
 
 MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
-os.environ['CUDA_VISIBLE_DEVICES'] = "2,6"  # Adjust based on your available GPUs'
+os.environ['CUDA_VISIBLE_DEVICES'] = "1,2"  # Adjust based on your available GPUs'
 
 def trim_output(output):
     instruction_prefix = "Answer the following question"
