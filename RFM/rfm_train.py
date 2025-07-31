@@ -9,17 +9,20 @@ import numpy as np
 os.environ['CUDA_VISIBLE_DEVICES'] = '3,4'
 
 RANDOM_SEED = 44
-MODEL_ID = "google/gemma-2-9b-it"
+MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
 
 def prepare_dataset(gsm8k_dataset, controller):
-    sampled_dataset = gsm8k_dataset.shuffle(seed=RANDOM_SEED).select(range(3000))
+    sampled_dataset = gsm8k_dataset.shuffle(seed=RANDOM_SEED).select(range(1000))
+
+    assistant_tag = '<|start_header_id|>assistant<|end_header_id|>'
+
 
     # Binary classification: 0 = original question, 1 = CoT-augmented
     training_dataset = [
-        {'prompt': controller.format_prompt(ex['question']), 'label': 0} for ex in sampled_dataset
+        {'prompt': controller.format_prompt(ex['question']) + assistant_tag + "\nAnswer: ", 'label': 0} for ex in sampled_dataset
     ]
     training_dataset += [
-        {'prompt': controller.format_prompt(ex['question']) + "Please think through your reasoning step by step before answering.", 'label': 1}
+        {'prompt': controller.format_prompt(ex['question']) + "Please think through your reasoning step by step before answering." + assistant_tag + "\nAnswer: ", 'label': 1}
         for ex in sampled_dataset
     ]
 
@@ -43,6 +46,8 @@ def setup_model():
 
     try:
         tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
+        tokenizer.pad_token_id = 0 if tokenizer.pad_token_id is None else tokenizer.pad_token_id
+
         model = AutoModelForCausalLM.from_pretrained(
             MODEL_ID,
             torch_dtype=torch_dtype,
@@ -65,7 +70,9 @@ if __name__ == "__main__":
     controller = NeuralController(
         model=model,
         tokenizer=tokenizer,
-        n_components=3,
+        batch_size=4,
+        n_components=4,
+        rfm_iters=10,
         control_method='rfm',
     )
 
