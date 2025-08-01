@@ -208,3 +208,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# .pt files
+*.pt
+
+# Remove all JSON files
+*.json

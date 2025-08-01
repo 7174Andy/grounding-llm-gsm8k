@@ -1,0 +1,163 @@
+import os
+from tqdm import tqdm
+import re
+from pathlib import Path
+import random
+import json
+
+import torch
+import evaluate
+from datasets import load_dataset
+from transformers import AutoTokenizer, AutoModelForCausalLM
+import numpy as np
+
+MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
+os.environ['CUDA_VISIBLE_DEVICES'] = "0,1"  # Adjust based on your available GPUs'
+
+
+def trim_output(output):
+    instruction_prefix = "Answer the following question"
+    question_prefix = 'Question:'
+    comment_prefix = 'Comment:'  # for some reason, Llama 13B likes to generate these comments indefinitely
+
+    for prefix in [instruction_prefix, question_prefix, comment_prefix]:
+        if prefix in output:
+            output = output.split(prefix)[0]
+
+    return output
+
+def extract_box(pred_str):
+    ans = pred_str.split("boxed")[-1]
+    if len(ans) == 0:
+        return ""
+    elif ans[0] == "{":
+        stack = 1
+        a = ""
+        for c in ans[1:]:
+            if c == "{":
+                stack += 1
+                a += c
+            elif c == "}":
+                stack -= 1
+                if stack == 0:
+                    break
+                a += c
+            else:
+                a += c
+    else:
+        a = ans.split("$")[0].strip()
+
+    return a
+
+def extract_last_number(pred_str):
+    o = re.sub(r"(\d),(\d)", r"\1\2", pred_str)
+    numbers = re.findall(r"[-+]?\d*\.\d+|\d+", o)
+    if numbers:
+        ans = numbers[-1]
+    else:
+        ans = None
+    return ans
+
+def main():
+    # Load the dataset
+    dataset = load_dataset("gsm8k", "main", split="test")
+    dataset = dataset.shuffle(seed=42).select(range(132))
+
+    test_data = []
+    for example in tqdm(dataset, desc="Processing examples"):
+        answer = example["answer"].split("####")[1].strip()
+        answer = re.sub(r"(\d),(\d)", r"\1\2", answer)
+        test_data.append({
+            "question": example["question"],
+            "answer": example["answer"].split("####")[0].strip(),
+            "gt": answer,
+        })
+
+    # Load the tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True, padding_side="left")
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+
+    # Prepare prompts
+    prefix = "Answer the following questions. You should think step-by-step and put your final answer within \\boxed{}.\n"
+    prompts = []
+    for i, example in tqdm(enumerate(test_data), total=len(test_data), desc="Preparing prompts"):
+        prompt = prefix + "Question: " + example["question"].strip() + "\nAnswer: "
+        messages = [{"role": "system", "content": prefix}, {"role": "user", "content": "Question: " + example["question"].strip()}]
+        prompt = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
+        prompts.append(prompt)
+    
+    # Load the steering vector
+    torch_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    model = AutoModelForCausalLM.from_pretrained(
+        MODEL_ID,
+        torch_dtype=torch_dtype,
+        device_map="auto",
+        trust_remote_code=True,
+        cache_dir="/opt/huggingface_cache",
+    )
+    layer = 20 # adjust for layer
+    alpha = 1.0 # adjust for alpha
+    steer_vec = torch.load(
+        f"hidden_analysis/vector_transition_reflection_steervec/layer_{layer}_transition_reflection_steervec.pt",
+        weights_only=True
+    ).to(torch_dtype)
+
+    def steering_hook(module, input, output):
+        if isinstance(output, tuple):
+            hidden = output[0]
+            steered = hidden + alpha * steer_vec.to(hidden.device)
+            return (steered,)
+        else:
+            return output + alpha * steer_vec.to(output.device)
+        
+    handle = model.model.layers[layer].register_forward_hook(steering_hook)
+    print("Model loaded successfully.")
+
+    inputs = tokenizer(prompts, return_tensors="pt", padding=True, truncation=True).to(model.device)
+    generated_tokens = model.generate(**inputs, max_new_tokens=1000, do_sample=False, pad_token_id=tokenizer.eos_token_id)
+    print("Generation completed.")
+
+    # Process outputs
+    input_lengths = [len(x) for x in inputs['input_ids']]
+    decoded_outputs = []
+    for i, output in enumerate(generated_tokens):
+        gen_only = output[input_lengths[i]:]
+        output_str = tokenizer.decode(gen_only, skip_special_tokens=True)
+        decoded_outputs.append(output_str)
+
+    outputs = [trim_output(output) for output in decoded_outputs]
+
+    predictions = [{
+        "prompt": prompt,
+        "problem": example["question"],
+        "solution": example["gt"],
+        "answer": example["answer"],
+        "generated_answer": extract_last_number(extract_box(output)),
+        "model_generation": output,
+    } for example, output, prompt in tqdm(zip(test_data, outputs, prompts), desc="Creating predictions", total=len(test_data))]
+
+    # Make output directory
+    model_name_for_dir = MODEL_ID.split("/")[-1]
+    output_dir = os.path.join(f"{model_name_for_dir}_SEAL")
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Save predictions
+    output_file = os.path.join(output_dir, "predictions.json")
+    with open(output_file, "w") as f:
+        for pred in predictions:
+            f.write(json.dumps(pred) + "\n")
+
+    print(f"Predictions saved to {output_file}")
+
+    # Remove the hook
+    handle.remove()
+
+
+
+if __name__ == "__main__":
+    torch.cuda.empty_cache()
+    main()
+    
+

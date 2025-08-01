@@ -57,7 +57,7 @@ def generate(data, save_dir):
     layer_num = model.config.num_hidden_layers+1
     hidden_dict=[{} for _ in range(layer_num)]
 
-    for k, p in tqdm(enumerate(prompts), total=len(prompts)):
+    for k, p in tqdm(enumerate(prompts), total=len(prompts), desc="Generating hidden states"):
         tokenized_batch = tokenizer([p], return_tensors="pt", padding=True)
         tokenized_batch = {k: v.to(model.device) for k, v in tokenized_batch.items()}
         with torch.no_grad():
