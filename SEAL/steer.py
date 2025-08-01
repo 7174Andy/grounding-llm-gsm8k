@@ -4,6 +4,7 @@ import re
 from pathlib import Path
 import random
 import json
+import time
 
 import torch
 import evaluate
@@ -115,9 +116,12 @@ def main():
     handle = model.model.layers[layer].register_forward_hook(steering_hook)
     print("Model loaded successfully.")
 
+    start_time = time.time()
     inputs = tokenizer(prompts, return_tensors="pt", padding=True, truncation=True).to(model.device)
     generated_tokens = model.generate(**inputs, max_new_tokens=1000, do_sample=False, pad_token_id=tokenizer.eos_token_id)
+    end_time = time.time()
     print("Generation completed.")
+    print(f"Generation time: {end_time - start_time:.4f} seconds")
 
     # Process outputs
     input_lengths = [len(x) for x in inputs['input_ids']]
