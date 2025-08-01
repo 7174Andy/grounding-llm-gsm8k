@@ -37,3 +37,6 @@ def main():
     for key, value in results.items():
         print(f"  {key}: {value}")
     print("Evaluation completed.")
+
+if __name__ == "__main__":
+    main()
