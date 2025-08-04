@@ -13,9 +13,10 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 import numpy as np
 
 from modeling_qwen2 import Qwen2ForCausalLM
+from modeling_gemma import GemmaForCausalLM
 from tqdm import trange
 
-MODEL_ID = "Qwen/Qwen2-7B-Instruct"
+MODEL_ID = "google/gemma-2-9b-it"
 os.environ['CUDA_VISIBLE_DEVICES'] = "1,2"
 
 
@@ -94,13 +95,24 @@ def main():
     
     # Load the steering vector
     torch_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-    model = Qwen2ForCausalLM.from_pretrained(
-        MODEL_ID,
-        torch_dtype=torch_dtype,
-        device_map="auto",
-        trust_remote_code=True,
-        cache_dir="/opt/huggingface_cache",
-    )
+    if "Qwen" in MODEL_ID:
+        model = Qwen2ForCausalLM.from_pretrained(
+            MODEL_ID,
+            torch_dtype=torch_dtype,
+            device_map="auto",
+            trust_remote_code=True,
+            cache_dir="/opt/huggingface_cache",
+        )
+    elif "gemma" in MODEL_ID:
+        model = GemmaForCausalLM.from_pretrained(
+            MODEL_ID,
+            torch_dtype=torch_dtype,
+            device_map="auto",
+            trust_remote_code=True,
+            cache_dir="/opt/huggingface_cache",
+        )
+    else: 
+        raise ValueError(f"Unsupported model ID: {MODEL_ID}")
     layer = 20 # adjust for layer
     alpha = 1.0 # adjust for alpha
     steer_vec = torch.load(

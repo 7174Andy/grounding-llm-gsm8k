@@ -10,9 +10,10 @@ import evaluate
 from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import numpy as np
+from vllm import LLM, SamplingParams
 
-MODEL_ID = "Qwen/Qwen2-7B-Instruct"
-os.environ['CUDA_VISIBLE_DEVICES'] = "1,2"  # Adjust based on your available GPUs'
+MODEL_ID = "google/gemma-2-9b-it"
+os.environ['CUDA_VISIBLE_DEVICES'] = "6"  # Adjust based on your available GPUs'
 
 def trim_output(output):
     instruction_prefix = "Answer the following question"
@@ -63,28 +64,42 @@ def main():
     # Generate answers
     torch_dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8 else torch.float32
 
-    model = AutoModelForCausalLM.from_pretrained(
-            MODEL_ID,
-            torch_dtype=torch_dtype,
-            device_map="auto",
-            cache_dir="/opt/huggingface_cache",
-            trust_remote_code=True,
-        )
+    # model = AutoModelForCausalLM.from_pretrained(
+    #     MODEL_ID,
+    #     torch_dtype=torch_dtype,
+    #     device_map="auto",
+    #     cache_dir="/opt/huggingface_cache",
+    #     trust_remote_code=True,
+    # )
+    model = LLM(MODEL_ID, dtype=torch_dtype, trust_remote_code=True, tensor_parallel_size=torch.cuda.device_count(), max_model_len=512+2000, gpu_memory_utilization=0.98, download_dir="/opt/huggingface_cache")
+    params = SamplingParams(temperature=0.0, max_tokens=1000, top_p=1.0, top_k=-1, stop=None)
     
     print("Model loaded successfully.")
-    inputs = tokenizer(prompts, return_tensors="pt", padding=True, truncation=True).to(model.device)
-    generated_tokens = model.generate(**inputs, max_new_tokens=512, do_sample=False, pad_token_id=tokenizer.eos_token_id)
+    outputs = model.generate(prompts, params)
+    decoded_outputs = [trim_output(output.outputs[0].text) for output in outputs]
+    
+    # inputs = tokenizer(prompts, return_tensors="pt", padding=True, truncation=True).to(model.device)
+    # batch_size = 8
+    # all_outputs = []
+    # for i in tqdm(range(0, len(prompts), batch_size), desc="Generating Output..."):
+    #         batch_prompts = prompts[i:i+batch_size]
+    #         inputs = tokenizer(batch_prompts, return_tensors="pt", padding=True, truncation=True, max_length=2048).to(model.device)
+    #         generated_tokens = model.generate(
+    #             **inputs,
+    #             max_new_tokens=512,
+    #             do_sample=False,
+    #             use_cache=True,
+    #             pad_token_id=tokenizer.eos_token_id,
+    #         )
+    #         input_lengths = [len(x) for x in inputs['input_ids']]
+    #         for j, output in enumerate(generated_tokens):
+    #             gen_only = output[input_lengths[j]:]
+    #             text = tokenizer.decode(gen_only, skip_special_tokens=True)
+    #             all_outputs.append(trim_output(text))
+    #         torch.cuda.empty_cache()
+
 
     print("Generation completed.")
-    input_lengths = [len(x) for x in inputs['input_ids']]
-
-    decoded_outputs = []
-    for i, output in enumerate(generated_tokens):
-        gen_only = output[input_lengths[i]:]
-        text = tokenizer.decode(gen_only, skip_special_tokens=True)
-        decoded_outputs.append(text)
-
-    outputs = [trim_output(output) for output in decoded_outputs]
 
     predictions = [{
         "prompt": prompt,
@@ -92,9 +107,9 @@ def main():
         "answer": example["gt"],
         "solution":  example["answer"],
         "model_generation": output,
-    } for example, output, prompt in tqdm(zip(test_data, outputs, prompts), desc="Creating predictions", total=len(test_data))]
+    } for example, output, prompt in tqdm(zip(test_data, decoded_outputs, prompts), desc="Creating predictions", total=len(test_data))]
 
-    # Make output directory
+    # Save predictions to output directory
     model_name_for_dir = MODEL_ID.split("/")[-1]
     output_dir = os.path.join(f"{model_name_for_dir}_SEAL")
     os.makedirs(output_dir, exist_ok=True)

@@ -4,6 +4,8 @@ from tqdm import tqdm
 from bert_score import score as bert_score
 import evaluate
 
+MODEL_ID = "Qwen/Qwen2-7B-Instruct"
+
 def load_predictions(file_path):
     """
     Load predictions from a JSON file.
@@ -70,7 +72,8 @@ def evaluate_bleu(predictions):
     }
 
 def main():
-    pred_path = os.path.join("Llama-3.1-8B-Instruct_SEAL", "predictions.json")
+    model_id_string = MODEL_ID.split("/")[-1]
+    pred_path = os.path.join(f"{model_id_string}_SEAL", "predictions.json")
     predictions = load_predictions(pred_path)
     results = evaluate_predictions(predictions)
     print("Evaluation Results:")

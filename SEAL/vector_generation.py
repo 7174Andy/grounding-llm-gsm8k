@@ -1,7 +1,7 @@
 import torch
 import os
 
-MODEL_ID = "Qwen/Qwen2-7B-Instruct"
+MODEL_ID = "google/gemma-2-9b-it"
 
 def load_data(data_dir, prefixs, layer_num=29, max_examples=None):
     data_paths = [os.path.join(data_dir, "hidden.pt")]
