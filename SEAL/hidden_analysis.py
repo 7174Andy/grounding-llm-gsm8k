@@ -4,7 +4,7 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from tqdm import tqdm
 
-MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
+MODEL_ID = "Qwen/Qwen2-7B-Instruct"
 os.environ['CUDA_VISIBLE_DEVICES'] = '3,4'
 
 def generate_index(text, tokenizer, split_id, think_only=True):
@@ -86,9 +86,10 @@ def extract_data(input_file):
                 data.append(json.loads(line))
     return data
 def main():
-    input_file = "./Llama-3.1-8B-Instruct_SEAL/baseline_predictions.json"
-    save_dir = "./hidden_analysis"
-    
+    model_id_string = MODEL_ID.split("/")[-1]
+    input_file = f"./{model_id_string}_SEAL/baseline_predictions.json"
+    save_dir = f"./hidden_analysis_{model_id_string}"
+
     print("Extracting data from input file...")
     data = extract_data(input_file)
     

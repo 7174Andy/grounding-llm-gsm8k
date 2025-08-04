@@ -12,8 +12,11 @@ from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import numpy as np
 
-MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
-os.environ['CUDA_VISIBLE_DEVICES'] = "0,1"  # Adjust based on your available GPUs'
+from modeling_qwen2 import Qwen2ForCausalLM
+from tqdm import trange
+
+MODEL_ID = "Qwen/Qwen2-7B-Instruct"
+os.environ['CUDA_VISIBLE_DEVICES'] = "1,2"
 
 
 def trim_output(output):
@@ -91,7 +94,7 @@ def main():
     
     # Load the steering vector
     torch_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-    model = AutoModelForCausalLM.from_pretrained(
+    model = Qwen2ForCausalLM.from_pretrained(
         MODEL_ID,
         torch_dtype=torch_dtype,
         device_map="auto",
@@ -101,30 +104,36 @@ def main():
     layer = 20 # adjust for layer
     alpha = 1.0 # adjust for alpha
     steer_vec = torch.load(
-        f"hidden_analysis/vector_transition_reflection_steervec/layer_{layer}_transition_reflection_steervec.pt",
+        f"hidden_analysis_{MODEL_ID.split('/')[-1]}/vector_transition_reflection_steervec/layer_{layer}_transition_reflection_steervec.pt",
         weights_only=True
     ).to(torch_dtype)
 
-    def steering_hook(module, input, output):
-        if isinstance(output, tuple):
-            hidden = output[0]
-            steered = hidden + alpha * steer_vec.to(hidden.device)
-            return (steered,)
-        else:
-            return output + alpha * steer_vec.to(output.device)
-        
-    handle = model.model.layers[layer].register_forward_hook(steering_hook)
+    print(f"Steering vector loaded for layer {layer} with alpha {alpha}")
+    model.set_steering_flag(steering_flag=True, steering_layer=layer, steer_vec=steer_vec, steer_coef=alpha, tokenizer=tokenizer)
+    model.start_new_round()
     print("Model loaded successfully.")
 
     start_time = time.time()
-    inputs = tokenizer(prompts, return_tensors="pt", padding=True, truncation=True).to(model.device)
-    generated_tokens = model.generate(**inputs, max_new_tokens=1000, do_sample=False, pad_token_id=tokenizer.eos_token_id)
+    # inputs = tokenizer(prompts, return_tensors="pt", padding=True, truncation=True).to(model.device)
+    # generated_tokens = model.generate(**inputs, max_new_tokens=1000, do_sample=False, pad_token_id=tokenizer.eos_token_id)
+    generated_tokens = []
+    input_lengths = []
+
+    for i in trange(0, len(prompts), 8):
+        model.start_new_round()
+        batch_prompts = prompts[i:i+8]
+        inputs = tokenizer(batch_prompts, return_tensors="pt", padding=True, truncation=True).to(model.device)
+        batch_input_lens = [len(x) for x in inputs['input_ids']]
+        input_lengths.extend(batch_input_lens)
+        with torch.no_grad():
+            generated_batch = model.generate(**inputs, max_new_tokens=1000, do_sample=False, pad_token_id=tokenizer.eos_token_id)
+        generated_tokens.extend(generated_batch)
+
     end_time = time.time()
     print("Generation completed.")
     print(f"Generation time: {end_time - start_time:.4f} seconds")
 
     # Process outputs
-    input_lengths = [len(x) for x in inputs['input_ids']]
     decoded_outputs = []
     for i, output in enumerate(generated_tokens):
         gen_only = output[input_lengths[i]:]
@@ -154,10 +163,7 @@ def main():
             f.write(json.dumps(pred) + "\n")
 
     print(f"Predictions saved to {output_file}")
-
-    # Remove the hook
-    handle.remove()
-
+    print("Processing complete.")
 
 
 if __name__ == "__main__":

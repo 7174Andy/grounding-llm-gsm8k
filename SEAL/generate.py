@@ -11,7 +11,7 @@ from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import numpy as np
 
-MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
+MODEL_ID = "Qwen/Qwen2-7B-Instruct"
 os.environ['CUDA_VISIBLE_DEVICES'] = "1,2"  # Adjust based on your available GPUs'
 
 def trim_output(output):
@@ -53,7 +53,10 @@ def main():
         prompt = prefix + "Question: " + example["question"].strip()+"\nAnswer: "
 
         # Apply chat template for Llama-3.1
-        messages = [{"role": "system", "content": prefix}, {"role": "user", "content": "Question: " + example["question"].strip()}]
+        if "Llama" in MODEL_ID:
+            messages = [{"role": "system", "content": prefix}, {"role": "user", "content": "Question: " + example["question"].strip()}]
+        else:
+            messages = [{"role": "user", "content": example["question"].strip()}]
         prompt = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
         prompts.append(prompt)
 

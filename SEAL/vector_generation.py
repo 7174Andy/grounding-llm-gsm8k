@@ -1,6 +1,8 @@
 import torch
 import os
 
+MODEL_ID = "Qwen/Qwen2-7B-Instruct"
+
 def load_data(data_dir, prefixs, layer_num=29, max_examples=None):
     data_paths = [os.path.join(data_dir, "hidden.pt")]
     switch = [[] for _ in range(layer_num)]
@@ -52,7 +54,8 @@ def generate_vector_switch_check(data_dir, prefixs, layers, save_prefix, overwri
         print(f"layer {layer} done")
 
 def main():
-    data_dir = "./hidden_analysis"
+    model_id_string = MODEL_ID.split("/")[-1]
+    data_dir = f"./hidden_analysis_{model_id_string}"
     prefixs = [""]
     layers = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
     save_prefix = "transition_reflection_steervec"
