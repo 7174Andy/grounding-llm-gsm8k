@@ -16,25 +16,31 @@
 from typing import Callable, Optional, Union
 
 import torch
-from torch import nn
+import torch.nn as nn
 
 from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.generation import GenerationMixin
-from transformers.masking_utils import create_causal_mask
+from transformers.masking_utils import create_causal_mask, create_sliding_window_causal_mask
+from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
 from transformers.modeling_layers import (
+    GenericForSequenceClassification,
+    GenericForTokenClassification,
     GradientCheckpointingLayer,
 )
 from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
 from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS, dynamic_rope_update
 from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from transformers.processing_utils import Unpack
-from transformers.utils import TransformersKwargs, auto_docstring, can_return_tuple
+from transformers.utils import TransformersKwargs, auto_docstring, can_return_tuple, logging
 from transformers.utils.generic import check_model_inputs
-from transformers.models.gemma.configuration_gemma import GemmaConfig
+from transformers.models.gemma2.configuration_gemma2 import Gemma2Config
 
 
-class GemmaRMSNorm(nn.Module):
+logger = logging.get_logger(__name__)
+
+
+class Gemma2RMSNorm(nn.Module):
     def __init__(self, dim: int, eps: float = 1e-6):
         super().__init__()
         self.eps = eps
@@ -45,7 +51,7 @@ class GemmaRMSNorm(nn.Module):
 
     def forward(self, x):
         output = self._norm(x.float())
-        # Llama does x.to(float16) * w whilst Gemma is (x * w).to(float16)
+        # Llama does x.to(float16) * w whilst Gemma2 is (x * w).to(float16)
         # See https://github.com/huggingface/transformers/pull/29402
         output = output * (1.0 + self.weight.float())
         return output.type_as(x)
@@ -54,7 +60,7 @@ class GemmaRMSNorm(nn.Module):
         return f"{tuple(self.weight.shape)}, eps={self.eps}"
 
 
-class GemmaMLP(nn.Module):
+class Gemma2MLP(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
@@ -63,45 +69,11 @@ class GemmaMLP(nn.Module):
         self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
         self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
-        self.act_fn = ACT2FN[config.hidden_act]
+        self.act_fn = ACT2FN[config.hidden_activation]
 
     def forward(self, x):
         down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
         return down_proj
-
-
-class GemmaRotaryEmbedding(nn.Module):
-    def __init__(self, config: GemmaConfig, device=None):
-        super().__init__()
-        # BC: "rope_type" was originally "type"
-        if hasattr(config, "rope_scaling") and isinstance(config.rope_scaling, dict):
-            self.rope_type = config.rope_scaling.get("rope_type", config.rope_scaling.get("type"))
-        else:
-            self.rope_type = "default"
-        self.max_seq_len_cached = config.max_position_embeddings
-        self.original_max_seq_len = config.max_position_embeddings
-
-        self.config = config
-        self.rope_init_fn = ROPE_INIT_FUNCTIONS[self.rope_type]
-
-        inv_freq, self.attention_scaling = self.rope_init_fn(self.config, device)
-        self.register_buffer("inv_freq", inv_freq, persistent=False)
-        self.original_inv_freq = self.inv_freq
-
-    @torch.no_grad()
-    @dynamic_rope_update  # power user: used with advanced RoPE types (e.g. dynamic rope)
-    def forward(self, x, position_ids):
-        inv_freq_expanded = self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1).to(x.device)
-        position_ids_expanded = position_ids[:, None, :].float()
-
-        device_type = x.device.type if isinstance(x.device.type, str) and x.device.type != "mps" else "cpu"
-        with torch.autocast(device_type=device_type, enabled=False):  # Force float32
-            freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(1, 2)
-            emb = torch.cat((freqs, freqs), dim=-1)
-            cos = emb.cos() * self.attention_scaling
-            sin = emb.sin() * self.attention_scaling
-
-        return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
 
 
 def rotate_half(x):
@@ -156,37 +128,46 @@ def eager_attention_forward(
     key: torch.Tensor,
     value: torch.Tensor,
     attention_mask: Optional[torch.Tensor],
-    scaling: float,
     dropout: float = 0.0,
-    **kwargs: Unpack[TransformersKwargs],
-):
+    scaling: Optional[float] = None,
+    softcap: Optional[float] = None,
+    **kwargs,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if scaling is None:
+        scaling = module.head_dim**-0.5
+
     key_states = repeat_kv(key, module.num_key_value_groups)
     value_states = repeat_kv(value, module.num_key_value_groups)
 
     attn_weights = torch.matmul(query, key_states.transpose(2, 3)) * scaling
-    if attention_mask is not None:
+
+    if softcap is not None:
+        attn_weights = attn_weights / softcap
+        attn_weights = torch.tanh(attn_weights)
+        attn_weights = attn_weights * softcap
+    if attention_mask is not None:  # no matter the length, we just slice it
         causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
         attn_weights = attn_weights + causal_mask
 
+    # upcast attention to fp32
     attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query.dtype)
     attn_weights = nn.functional.dropout(attn_weights, p=dropout, training=module.training)
     attn_output = torch.matmul(attn_weights, value_states)
     attn_output = attn_output.transpose(1, 2).contiguous()
-
     return attn_output, attn_weights
 
 
-class GemmaAttention(nn.Module):
+class Gemma2Attention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
 
-    def __init__(self, config: GemmaConfig, layer_idx: int):
+    def __init__(self, config: Gemma2Config, layer_idx: int):
         super().__init__()
         self.config = config
         self.layer_idx = layer_idx
         self.head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
         self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
-        self.scaling = self.head_dim**-0.5
-        self.attention_dropout = config.attention_dropout
+        self.scaling = config.query_pre_attn_scalar**-0.5
+        self.attention_dropout = self.config.attention_dropout
         self.is_causal = True
 
         self.q_proj = nn.Linear(
@@ -201,6 +182,8 @@ class GemmaAttention(nn.Module):
         self.o_proj = nn.Linear(
             config.num_attention_heads * self.head_dim, config.hidden_size, bias=config.attention_bias
         )
+        self.attn_logit_softcapping = self.config.attn_logit_softcapping
+        self.sliding_window = config.sliding_window if config.layer_types[layer_idx] == "sliding_attention" else None
 
     def forward(
         self,
@@ -209,8 +192,8 @@ class GemmaAttention(nn.Module):
         attention_mask: Optional[torch.Tensor],
         past_key_value: Optional[Cache] = None,
         cache_position: Optional[torch.LongTensor] = None,
-        **kwargs: Unpack[TransformersKwargs],
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+        **kwargs: Unpack[FlashAttentionKwargs],
+    ) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[tuple[torch.Tensor]]]:
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
@@ -236,8 +219,10 @@ class GemmaAttention(nn.Module):
             key_states,
             value_states,
             attention_mask,
-            dropout=0.0 if not self.training else self.attention_dropout,
+            dropout=self.attention_dropout if self.training else 0.0,
             scaling=self.scaling,
+            sliding_window=self.sliding_window,
+            softcap=self.attn_logit_softcapping,
             **kwargs,
         )
 
@@ -246,57 +231,105 @@ class GemmaAttention(nn.Module):
         return attn_output, attn_weights
 
 
-class GemmaDecoderLayer(nn.Module):
-    def __init__(self, config: GemmaConfig, layer_idx: int):
+class Gemma2DecoderLayer(GradientCheckpointingLayer):
+    def __init__(self, config: Gemma2Config, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
+        self.config = config
+        self.attention_type = config.layer_types[layer_idx]
+        self.self_attn = Gemma2Attention(config=config, layer_idx=layer_idx)
+        self.mlp = Gemma2MLP(config)
+        self.input_layernorm = Gemma2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = Gemma2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
-        self.self_attn = GemmaAttention(config=config, layer_idx=layer_idx)
-
-        self.mlp = GemmaMLP(config)
-        self.input_layernorm = GemmaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = GemmaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.pre_feedforward_layernorm = Gemma2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_feedforward_layernorm = Gemma2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
     def forward(
         self,
         hidden_states: torch.Tensor,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor],
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_value: Optional[Cache] = None,
+        output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = False,
         cache_position: Optional[torch.LongTensor] = None,
-        position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
-        **kwargs: Unpack[TransformersKwargs],
-    ) -> tuple[torch.Tensor]:
+        **kwargs,
+    ) -> tuple[torch.FloatTensor, Optional[tuple[torch.FloatTensor, torch.FloatTensor]]]:
         residual = hidden_states
+
         hidden_states = self.input_layernorm(hidden_states)
+
         # Self Attention
-        hidden_states, _ = self.self_attn(
+        hidden_states, self_attn_weights = self.self_attn(
             hidden_states=hidden_states,
+            position_embeddings=position_embeddings,
             attention_mask=attention_mask,
             position_ids=position_ids,
             past_key_value=past_key_value,
+            output_attentions=output_attentions,
             use_cache=use_cache,
             cache_position=cache_position,
-            position_embeddings=position_embeddings,
             **kwargs,
         )
+        hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = residual + hidden_states
 
-        # Fully Connected
         residual = hidden_states
-        hidden_states = self.post_attention_layernorm(hidden_states)
+        hidden_states = self.pre_feedforward_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states)
+        hidden_states = self.post_feedforward_layernorm(hidden_states)
         hidden_states = residual + hidden_states
-        return hidden_states
+
+        outputs = (hidden_states,)
+
+        if output_attentions:
+            outputs += (self_attn_weights,)
+
+        return outputs
+
+
+class Gemma2RotaryEmbedding(nn.Module):
+    def __init__(self, config: Gemma2Config, device=None):
+        super().__init__()
+        # BC: "rope_type" was originally "type"
+        if hasattr(config, "rope_scaling") and isinstance(config.rope_scaling, dict):
+            self.rope_type = config.rope_scaling.get("rope_type", config.rope_scaling.get("type"))
+        else:
+            self.rope_type = "default"
+        self.max_seq_len_cached = config.max_position_embeddings
+        self.original_max_seq_len = config.max_position_embeddings
+
+        self.config = config
+        self.rope_init_fn = ROPE_INIT_FUNCTIONS[self.rope_type]
+
+        inv_freq, self.attention_scaling = self.rope_init_fn(self.config, device)
+        self.register_buffer("inv_freq", inv_freq, persistent=False)
+        self.original_inv_freq = self.inv_freq
+
+    @torch.no_grad()
+    @dynamic_rope_update  # power user: used with advanced RoPE types (e.g. dynamic rope)
+    def forward(self, x, position_ids):
+        inv_freq_expanded = self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1).to(x.device)
+        position_ids_expanded = position_ids[:, None, :].float()
+
+        device_type = x.device.type if isinstance(x.device.type, str) and x.device.type != "mps" else "cpu"
+        with torch.autocast(device_type=device_type, enabled=False):  # Force float32
+            freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(1, 2)
+            emb = torch.cat((freqs, freqs), dim=-1)
+            cos = emb.cos() * self.attention_scaling
+            sin = emb.sin() * self.attention_scaling
+
+        return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
 
 
 @auto_docstring
-class GemmaPreTrainedModel(PreTrainedModel):
-    config: GemmaConfig
+class Gemma2PreTrainedModel(PreTrainedModel):
+    config: Gemma2Config
     base_model_prefix = "model"
     supports_gradient_checkpointing = True
-    _no_split_modules = ["GemmaDecoderLayer"]
+    _no_split_modules = ["Gemma2DecoderLayer"]
     _skip_keys_device_placement = ["past_key_values"]
     _supports_flash_attn = True
     _supports_sdpa = True
@@ -305,24 +338,24 @@ class GemmaPreTrainedModel(PreTrainedModel):
     _can_compile_fullgraph = True
     _supports_attention_backend = True
     _can_record_outputs = {
-        "hidden_states": GemmaDecoderLayer,
-        "attentions": GemmaAttention,
+        "hidden_states": Gemma2DecoderLayer,
+        "attentions": Gemma2Attention,
     }
 
 
 @auto_docstring
-class GemmaModel(GemmaPreTrainedModel):
-    def __init__(self, config: GemmaConfig):
+class Gemma2Model(Gemma2PreTrainedModel):
+    def __init__(self, config: Gemma2Config):
         super().__init__(config)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.layers = nn.ModuleList(
-            [GemmaDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
+            [Gemma2DecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
-        self.norm = GemmaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.rotary_emb = GemmaRotaryEmbedding(config=config)
+        self.norm = Gemma2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.rotary_emb = Gemma2RotaryEmbedding(config=config)
         self.gradient_checkpointing = False
 
         # Initialize weights and apply final processing
@@ -338,20 +371,34 @@ class GemmaModel(GemmaPreTrainedModel):
         past_key_values: Optional[Cache] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
         steering_flag: Optional[torch.BoolTensor] = None,
-        steering_layer: Optional[int] = None,
         steering_vector: Optional[torch.FloatTensor] = None,
+        steering_layer: Optional[int] = None,
         steering_coef: Optional[float] = 0.0,
         **kwargs: Unpack[TransformersKwargs],
     ) -> BaseModelOutputWithPast:
+        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        output_hidden_states = (
+            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        )
+        use_cache = use_cache if use_cache is not None else self.config.use_cache
+
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
+
+        if self.gradient_checkpointing and self.training and use_cache:
+            logger.warning_once(
+                "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`."
+            )
+            use_cache = False
 
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
 
-        if use_cache and past_key_values is None:
+        if use_cache and past_key_values is None and not self.training:
             past_key_values = DynamicCache()
 
         if cache_position is None:
@@ -363,14 +410,22 @@ class GemmaModel(GemmaPreTrainedModel):
         if position_ids is None:
             position_ids = cache_position.unsqueeze(0)
 
-        causal_mask = create_causal_mask(
-            config=self.config,
-            input_embeds=inputs_embeds,
-            attention_mask=attention_mask,
-            cache_position=cache_position,
-            past_key_values=past_key_values,
-            position_ids=position_ids,
-        )
+        # It may already have been prepared by e.g. `generate`
+        if not isinstance(causal_mask_mapping := attention_mask, dict):
+            # Prepare mask arguments
+            mask_kwargs = {
+                "config": self.config,
+                "input_embeds": inputs_embeds,
+                "attention_mask": attention_mask,
+                "cache_position": cache_position,
+                "past_key_values": past_key_values,
+                "position_ids": position_ids,
+            }
+            # Create the masks
+            causal_mask_mapping = {
+                "full_attention": create_causal_mask(**mask_kwargs),
+                "sliding_attention": create_sliding_window_causal_mask(**mask_kwargs),
+            }
 
         # embed positions
         hidden_states = inputs_embeds
@@ -379,51 +434,67 @@ class GemmaModel(GemmaPreTrainedModel):
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
         # normalized
-        # Gemma downcasts the below to float16, causing sqrt(3072)=55.4256 to become 55.5
+        # Gemma2 downcasts the below to float16, causing sqrt(3072)=55.4256 to become 55.5
         # See https://github.com/huggingface/transformers/pull/29402
         normalizer = torch.tensor(self.config.hidden_size**0.5, dtype=hidden_states.dtype)
         hidden_states = hidden_states * normalizer
 
-        for i, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
-            if steering_flag is not None and steering_layer == i:
+        # decoder layers
+        all_hidden_states = () if output_hidden_states else None
+        all_self_attns = () if output_attentions else None
+
+        for l, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
+            if steering_flag is not None and steering_layer == l:
                 steering_vector = steering_vector.to(hidden_states.dtype).to(hidden_states.device)
                 steering_flag = steering_flag.to(hidden_states.device)
-                mask = steering_flag.float().unsqueeze(-1)  # [batch, 1, 1]
-                update = mask * (steering_coef * steering_vector)  # Broadcasted
-                hidden_states[:, -1, :] += update.squeeze(1)
-            hidden_states = decoder_layer(
+                hidden_states[steering_flag, -1] += steering_coef * steering_vector
+
+            if output_hidden_states:
+                all_hidden_states += (hidden_states,)
+
+            layer_outputs = decoder_layer(
                 hidden_states,
-                attention_mask=causal_mask,
+                position_embeddings=position_embeddings,
+                attention_mask=causal_mask_mapping[decoder_layer.attention_type],
                 position_ids=position_ids,
                 past_key_value=past_key_values,
+                output_attentions=output_attentions,
                 use_cache=use_cache,
                 cache_position=cache_position,
-                position_embeddings=position_embeddings,
                 **kwargs,
             )
+
+            hidden_states = layer_outputs[0]
+
+            if output_attentions:
+                all_self_attns += (layer_outputs[1],)
+
         hidden_states = self.norm(hidden_states)
 
-        if steering_flag is not None and steering_layer == len(self.layers):
-            hidden_states[steering_flag, -1] += steering_coef * steering_vector
+        if output_hidden_states:
+            all_hidden_states += (hidden_states,)
+
         return BaseModelOutputWithPast(
             last_hidden_state=hidden_states,
-            past_key_values=past_key_values if use_cache else None,
+            past_key_values=past_key_values,
+            hidden_states=all_hidden_states,
+            attentions=all_self_attns,
         )
 
 
 @auto_docstring
-class GemmaForCausalLM(GemmaPreTrainedModel, GenerationMixin):
+class Gemma2ForCausalLM(Gemma2PreTrainedModel, GenerationMixin):
     _tied_weights_keys = ["lm_head.weight"]
     _tp_plan = {"lm_head": "colwise_rep"}
     _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
 
     def __init__(self, config):
         super().__init__(config)
-        self.model = GemmaModel(config)
+        self.model = Gemma2Model(config)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
-        # Steering
+        #NEW HERE
         self.new_round=False
         self.cur_steps = 0
 
@@ -453,7 +524,6 @@ class GemmaForCausalLM(GemmaPreTrainedModel, GenerationMixin):
             assert steering_layer is not None, "Steering layer must be provided for steering"
             assert steer_vec is not None, "Steering vector must be provided for steering"
             assert tokenizer is not None, "Tokenizer must be provided for steering"
-            self.steering_vector = self.steering_vector.to(self.device, dtype=self.lm_head.weight.dtype)
             vocab = tokenizer.get_vocab()
             self.steering_split_ids = torch.LongTensor([vocab[token] for token in vocab.keys() if "ĊĊ" in token]).to(self.device)
             self.steering_think_start_id = tokenizer.encode("<think>", add_special_tokens=False)[0]
@@ -481,19 +551,20 @@ class GemmaForCausalLM(GemmaPreTrainedModel, GenerationMixin):
         inputs_embeds: Optional[torch.FloatTensor] = None,
         labels: Optional[torch.LongTensor] = None,
         use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
-        steering_flag: Optional[bool] = None,
-        **kwargs: Unpack[TransformersKwargs],
+        **kwargs,
     ) -> CausalLMOutputWithPast:
         r"""
         Example:
 
         ```python
-        >>> from transformers import AutoTokenizer, GemmaForCausalLM
+        >>> from transformers import AutoTokenizer, Gemma2ForCausalLM
 
-        >>> model = GemmaForCausalLM.from_pretrained("google/gemma-7b")
-        >>> tokenizer = AutoTokenizer.from_pretrained("google/gemma-7b")
+        >>> model = Gemma2ForCausalLM.from_pretrained("google/gemma-2-9b")
+        >>> tokenizer = AutoTokenizer.from_pretrained("google/gemma-2-9b")
 
         >>> prompt = "What is your favorite condiment?"
         >>> inputs = tokenizer(prompt, return_tensors="pt")
@@ -503,6 +574,17 @@ class GemmaForCausalLM(GemmaPreTrainedModel, GenerationMixin):
         >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
         "What is your favorite condiment?"
         ```"""
+
+        if self.training and self.config._attn_implementation != "eager":
+            logger.warning_once(
+                "It is strongly recommended to train Gemma2 models with the `eager` attention implementation "
+                f"instead of `{self.config._attn_implementation}`. Use `eager` with `AutoModelForCausalLM.from_pretrained('<path-to-checkpoint>', attn_implementation='eager')`."
+            )
+        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        output_hidden_states = (
+            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        )
+
         if self.steering_flag:
             if self.new_round:
                 self.new_round=False
@@ -515,12 +597,10 @@ class GemmaForCausalLM(GemmaPreTrainedModel, GenerationMixin):
             self.steering_think_flag = torch.logical_and(self.steering_think_flag, last_tokens!=self.steering_think_end_id)
             split_flag = torch.isin(last_tokens, self.steering_split_ids.to(input_ids.device))
             steering_flag = torch.logical_and(split_flag, self.steering_think_flag)
-            steering_flag = steering_flag & True
         else:
             steering_flag = None
 
-        self.cur_steps += 1
-
+        # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
         outputs: BaseModelOutputWithPast = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -528,15 +608,13 @@ class GemmaForCausalLM(GemmaPreTrainedModel, GenerationMixin):
             past_key_values=past_key_values,
             inputs_embeds=inputs_embeds,
             use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
             cache_position=cache_position,
             steering_flag=steering_flag,
-            steering_layer=self.steering_layer,
             steering_vector=self.steering_vector,
+            steering_layer=self.steering_layer,
             steering_coef=self.steering_coef,
-            steering_think_flag=self.steering_think_flag,
-            steering_split_ids=self.steering_split_ids,
-            steering_think_start_id=self.steering_think_start_id,
-            steering_think_end_id=self.steering_think_end_id,
             **kwargs,
         )
 
@@ -544,10 +622,14 @@ class GemmaForCausalLM(GemmaPreTrainedModel, GenerationMixin):
         # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
         logits = self.lm_head(hidden_states[:, slice_indices, :])
+        if self.config.final_logit_softcapping is not None:
+            logits = logits / self.config.final_logit_softcapping
+            logits = torch.tanh(logits)
+            logits = logits * self.config.final_logit_softcapping
 
         loss = None
         if labels is not None:
-            loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.vocab_size, **kwargs)
+            loss = self.loss_function(logits, labels, self.vocab_size, **kwargs)
 
         return CausalLMOutputWithPast(
             loss=loss,
@@ -556,3 +638,20 @@ class GemmaForCausalLM(GemmaPreTrainedModel, GenerationMixin):
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
         )
+
+
+class Gemma2ForSequenceClassification(GenericForSequenceClassification, Gemma2PreTrainedModel):
+    pass
+
+
+class Gemma2ForTokenClassification(GenericForTokenClassification, Gemma2PreTrainedModel):
+    pass
+
+
+__all__ = [
+    "Gemma2ForCausalLM",
+    "Gemma2Model",
+    "Gemma2PreTrainedModel",
+    "Gemma2ForSequenceClassification",
+    "Gemma2ForTokenClassification",
+]

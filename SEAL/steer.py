@@ -13,11 +13,14 @@ from transformers import AutoTokenizer
 import numpy as np
 
 from modeling_qwen2 import Qwen2ForCausalLM
-from modeling_gemma import GemmaForCausalLM
+from modeling_gemma2 import Gemma2ForCausalLM
 from tqdm import trange
 
 MODEL_ID = "google/gemma-2-9b-it"
-os.environ['CUDA_VISIBLE_DEVICES'] = "2,6"
+os.environ['CUDA_VISIBLE_DEVICES'] = "1,2"
+
+import torch._dynamo
+torch._dynamo.config.capture_dynamic_output_shape_ops = True
 
 
 def trim_output(output):
@@ -107,7 +110,7 @@ def main():
             cache_dir="/opt/huggingface_cache",
         )
     elif "gemma" in MODEL_ID:
-        model = GemmaForCausalLM.from_pretrained(
+        model = Gemma2ForCausalLM.from_pretrained(
             MODEL_ID,
             torch_dtype=torch_dtype,
             device_map="auto",
@@ -129,32 +132,20 @@ def main():
     print("Model loaded successfully.")
 
     start_time = time.time()
-    # inputs = tokenizer(prompts, return_tensors="pt", padding=True, truncation=True).to(model.device)
-    # generated_tokens = model.generate(**inputs, max_new_tokens=1000, do_sample=False, pad_token_id=tokenizer.eos_token_id)
+    inputs = tokenizer(prompts, return_tensors="pt", padding=True, truncation=True).to(model.device)
+    generated_tokens = model.generate(**inputs, max_new_tokens=1000, do_sample=False, pad_token_id=tokenizer.eos_token_id)
     generated_tokens = []
     input_lengths = []
-    prompt = prompts[0]
-    inputs = tokenizer(prompt, return_tensors="pt", padding=True, truncation=True).to(model.device)
-    with torch.no_grad():
-        generated = model.generate(
-            **inputs,
-            max_new_tokens=1000,
-            do_sample=False,
-            pad_token_id=tokenizer.eos_token_id,
-        )
-    
-    generated_text = tokenizer.decode(generated[0], skip_special_tokens=True)
-    print(f"Generated text for first prompt: {generated_text}")
 
-    # for i in trange(0, len(prompts), 8):
-    #     model.start_new_round()
-    #     batch_prompts = prompts[i:i+8]
-    #     inputs = tokenizer(batch_prompts, return_tensors="pt", padding=True, truncation=True).to(model.device)
-    #     batch_input_lens = [len(x) for x in inputs['input_ids']]
-    #     input_lengths.extend(batch_input_lens)
-    #     with torch.no_grad():
-    #         generated_batch = model.generate(**inputs, max_new_tokens=1000, do_sample=False, pad_token_id=tokenizer.eos_token_id)
-    #     generated_tokens.extend(generated_batch)
+    for i in trange(0, len(prompts), 8):
+        model.start_new_round()
+        batch_prompts = prompts[i:i+8]
+        inputs = tokenizer(batch_prompts, return_tensors="pt", padding=True, truncation=True).to(model.device)
+        batch_input_lens = [len(x) for x in inputs['input_ids']]
+        input_lengths.extend(batch_input_lens)
+        with torch.no_grad():
+            generated_batch = model.generate(**inputs, max_new_tokens=1000, do_sample=False, pad_token_id=tokenizer.eos_token_id)
+        generated_tokens.extend(generated_batch)
 
     end_time = time.time()
     print("Generation completed.")
