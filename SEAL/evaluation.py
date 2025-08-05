@@ -4,7 +4,7 @@ from tqdm import tqdm
 from bert_score import score as bert_score
 import evaluate
 
-MODEL_ID = "Qwen/Qwen2-7B-Instruct"
+MODEL_ID = "google/gemma-2-9b-it"
 
 def load_predictions(file_path):
     """
@@ -76,7 +76,7 @@ def main():
     pred_path = os.path.join(f"{model_id_string}_SEAL", "predictions.json")
     predictions = load_predictions(pred_path)
     results = evaluate_predictions(predictions)
-    print("Evaluation Results:")
+    print("Accuracy Results:")
     for key, value in results.items():
         print(f"  {key}: {value}")
     bert_results = evaluate_bert(predictions)

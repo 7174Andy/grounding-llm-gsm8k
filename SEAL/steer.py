@@ -165,7 +165,7 @@ def main():
         "problem": example["question"],
         "solution": example["gt"],
         "answer": example["answer"],
-        "generated_answer": extract_last_number(extract_box(output)),
+        "generated_answer": extract_last_number(extract_box(output)) if "Qwen" in MODEL_ID else extract_last_number(output),
         "model_generation": output,
     } for example, output, prompt in tqdm(zip(test_data, outputs, prompts), desc="Creating predictions", total=len(test_data))]
 
