@@ -9,7 +9,7 @@ import time
 import torch
 import evaluate
 from datasets import load_dataset
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer
 import numpy as np
 
 from modeling_qwen2 import Qwen2ForCausalLM
@@ -17,7 +17,7 @@ from modeling_gemma import GemmaForCausalLM
 from tqdm import trange
 
 MODEL_ID = "google/gemma-2-9b-it"
-os.environ['CUDA_VISIBLE_DEVICES'] = "1,2"
+os.environ['CUDA_VISIBLE_DEVICES'] = "2,6"
 
 
 def trim_output(output):
@@ -89,7 +89,10 @@ def main():
     prompts = []
     for i, example in tqdm(enumerate(test_data), total=len(test_data), desc="Preparing prompts"):
         prompt = prefix + "Question: " + example["question"].strip() + "\nAnswer: "
-        messages = [{"role": "system", "content": prefix}, {"role": "user", "content": "Question: " + example["question"].strip()}]
+        if "Llama" in MODEL_ID:
+            messages = [{"role": "system", "content": prefix}, {"role": "user", "content": "Question: " + example["question"].strip()}]
+        else:
+            messages = [{"role": "user", "content": example["question"].strip()}]
         prompt = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
         prompts.append(prompt)
     
@@ -108,8 +111,8 @@ def main():
             MODEL_ID,
             torch_dtype=torch_dtype,
             device_map="auto",
-            trust_remote_code=True,
             cache_dir="/opt/huggingface_cache",
+            trust_remote_code=True,
         )
     else: 
         raise ValueError(f"Unsupported model ID: {MODEL_ID}")
@@ -130,16 +133,28 @@ def main():
     # generated_tokens = model.generate(**inputs, max_new_tokens=1000, do_sample=False, pad_token_id=tokenizer.eos_token_id)
     generated_tokens = []
     input_lengths = []
+    prompt = prompts[0]
+    inputs = tokenizer(prompt, return_tensors="pt", padding=True, truncation=True).to(model.device)
+    with torch.no_grad():
+        generated = model.generate(
+            **inputs,
+            max_new_tokens=1000,
+            do_sample=False,
+            pad_token_id=tokenizer.eos_token_id,
+        )
+    
+    generated_text = tokenizer.decode(generated[0], skip_special_tokens=True)
+    print(f"Generated text for first prompt: {generated_text}")
 
-    for i in trange(0, len(prompts), 8):
-        model.start_new_round()
-        batch_prompts = prompts[i:i+8]
-        inputs = tokenizer(batch_prompts, return_tensors="pt", padding=True, truncation=True).to(model.device)
-        batch_input_lens = [len(x) for x in inputs['input_ids']]
-        input_lengths.extend(batch_input_lens)
-        with torch.no_grad():
-            generated_batch = model.generate(**inputs, max_new_tokens=1000, do_sample=False, pad_token_id=tokenizer.eos_token_id)
-        generated_tokens.extend(generated_batch)
+    # for i in trange(0, len(prompts), 8):
+    #     model.start_new_round()
+    #     batch_prompts = prompts[i:i+8]
+    #     inputs = tokenizer(batch_prompts, return_tensors="pt", padding=True, truncation=True).to(model.device)
+    #     batch_input_lens = [len(x) for x in inputs['input_ids']]
+    #     input_lengths.extend(batch_input_lens)
+    #     with torch.no_grad():
+    #         generated_batch = model.generate(**inputs, max_new_tokens=1000, do_sample=False, pad_token_id=tokenizer.eos_token_id)
+    #     generated_tokens.extend(generated_batch)
 
     end_time = time.time()
     print("Generation completed.")
@@ -176,7 +191,6 @@ def main():
 
     print(f"Predictions saved to {output_file}")
     print("Processing complete.")
-
 
 if __name__ == "__main__":
     torch.cuda.empty_cache()
