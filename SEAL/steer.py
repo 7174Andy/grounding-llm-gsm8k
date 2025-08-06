@@ -9,15 +9,15 @@ import time
 import torch
 import evaluate
 from datasets import load_dataset
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, AutoModelForCausalLM
 import numpy as np
 
 from modeling_qwen2 import Qwen2ForCausalLM
 from modeling_gemma2 import Gemma2ForCausalLM
 from tqdm import trange
 
-MODEL_ID = "google/gemma-2-9b-it"
-os.environ['CUDA_VISIBLE_DEVICES'] = "1,2"
+MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
+os.environ['CUDA_VISIBLE_DEVICES'] = "2,3"
 
 import torch._dynamo
 torch._dynamo.config.capture_dynamic_output_shape_ops = True
@@ -65,6 +65,8 @@ def extract_last_number(pred_str):
     else:
         ans = None
     return ans
+
+
 
 def main():
     # Load the dataset
@@ -117,6 +119,14 @@ def main():
             cache_dir="/opt/huggingface_cache",
             trust_remote_code=True,
         )
+    elif "Llama" in MODEL_ID:
+        model = AutoModelForCausalLM.from_pretrained(
+            MODEL_ID,
+            torch_dtype=torch_dtype,
+            device_map="auto",
+            cache_dir="/opt/huggingface_cache",
+            trust_remote_code=True,
+        )
     else: 
         raise ValueError(f"Unsupported model ID: {MODEL_ID}")
     layer = 20 # adjust for layer
@@ -127,8 +137,31 @@ def main():
     ).to(torch_dtype)
 
     print(f"Steering vector loaded for layer {layer} with alpha {alpha}")
-    model.set_steering_flag(steering_flag=True, steering_layer=layer, steer_vec=steer_vec, steer_coef=alpha, tokenizer=tokenizer)
-    model.start_new_round()
+
+    # Define the steering hook
+    def steering_hook(module, input, output):
+        # output is a tuple: (hidden_states, attentions, past_key_values)
+        if isinstance(output, tuple):
+            hidden_states = output[0]
+        else:
+            hidden_states = output
+
+        # Steering applied to all tokens in the sequence
+        hidden_states = hidden_states + alpha * steer_vec.to(hidden_states.device)
+
+        if isinstance(output, tuple):
+            return (hidden_states,) + output[1:]
+
+        return hidden_states
+
+    # Set steering flag if applicable
+    if not "llama" in MODEL_ID.lower():
+        model.set_steering_flag(steering_flag=True, steering_layer=layer, steer_vec=steer_vec, steer_coef=alpha, tokenizer=tokenizer)
+        model.start_new_round()
+    else:
+        target_layer = model.model.layers[layer]
+        hook_handle = target_layer.register_forward_hook(steering_hook)
+
     print("Model loaded successfully.")
 
     start_time = time.time()
@@ -138,7 +171,8 @@ def main():
     input_lengths = []
 
     for i in trange(0, len(prompts), 8):
-        model.start_new_round()
+        if not "llama" in MODEL_ID.lower():
+            model.start_new_round()
         batch_prompts = prompts[i:i+8]
         inputs = tokenizer(batch_prompts, return_tensors="pt", padding=True, truncation=True).to(model.device)
         batch_input_lens = [len(x) for x in inputs['input_ids']]
@@ -182,6 +216,9 @@ def main():
 
     print(f"Predictions saved to {output_file}")
     print("Processing complete.")
+
+    if "llama" in MODEL_ID.lower():
+        hook_handle.remove()
 
 if __name__ == "__main__":
     torch.cuda.empty_cache()

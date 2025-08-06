@@ -1,7 +1,8 @@
 import torch
 import os
+import tqdm
 
-MODEL_ID = "google/gemma-2-9b-it"
+MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
 
 def load_data(data_dir, prefixs, layer_num=29, max_examples=None):
     data_paths = [os.path.join(data_dir, "hidden.pt")]
@@ -11,7 +12,7 @@ def load_data(data_dir, prefixs, layer_num=29, max_examples=None):
     for i, data_path in enumerate(data_paths):
         data = torch.load(data_path, weights_only=False)
 
-        for l in range(layer_num):
+        for l in tqdm.tqdm(range(layer_num), desc=f"Processing layers {i+1}/{len(data_paths)}"):
             layer_data = data[l]
             for k in layer_data:
                 if max_examples is not None and max_examples > 0 and k >= max_examples:

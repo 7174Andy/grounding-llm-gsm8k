@@ -12,8 +12,8 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 import numpy as np
 from vllm import LLM, SamplingParams
 
-MODEL_ID = "google/gemma-2-9b-it"
-os.environ['CUDA_VISIBLE_DEVICES'] = "6"  # Adjust based on your available GPUs'
+MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
+os.environ['CUDA_VISIBLE_DEVICES'] = "2,3"  # Adjust based on your available GPUs'
 
 def trim_output(output):
     instruction_prefix = "Answer the following question"
@@ -71,7 +71,7 @@ def main():
     #     cache_dir="/opt/huggingface_cache",
     #     trust_remote_code=True,
     # )
-    model = LLM(MODEL_ID, dtype=torch_dtype, trust_remote_code=True, tensor_parallel_size=torch.cuda.device_count(), max_model_len=512+2000, gpu_memory_utilization=0.98, download_dir="/opt/huggingface_cache")
+    model = LLM(MODEL_ID, dtype=torch_dtype, trust_remote_code=True, tensor_parallel_size=torch.cuda.device_count(), max_model_len=512+2000, download_dir="/opt/huggingface_cache", gpu_memory_utilization=0.60)
     params = SamplingParams(temperature=0.0, max_tokens=1000, top_p=1.0, top_k=-1, stop=None)
     
     print("Model loaded successfully.")
