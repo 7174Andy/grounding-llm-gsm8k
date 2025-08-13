@@ -4,7 +4,7 @@ from tqdm import tqdm
 from bert_score import score as bert_score
 import evaluate
 
-MODEL_ID = "google/gemma-2-9b-it"
+MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
 
 def load_predictions(file_path):
     """
