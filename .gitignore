@@ -214,3 +214,6 @@ __marimo__/
 
 # Remove all JSON files
 *.json
+
+# Ignore the dataset
+GCAV/*_dataset/
