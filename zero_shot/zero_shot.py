@@ -10,10 +10,10 @@ from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import numpy as np
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '1,2'
+os.environ['CUDA_VISIBLE_DEVICES'] = '3,4'
 
 # Configuration
-MODEL_ID = "google/gemma-2-9b-it"
+MODEL_ID = "Qwen/Qwen2-7B-Instruct"
 BATCH_SIZE = 8
 ANS_RE = re.compile(r"#### (\-?[0-9\.\,]+)")
 
@@ -128,7 +128,7 @@ def evaluate_accuracy(model, tokenizer, device, gsm8k_test):
     for ex in gsm8k_test:
         question = ex['question']
         answer = extract_answer_hf(ex['answer'])
-        prompts.append(f"Question: {question}  At the end, give your final numeric answer in the format '#### answer'.\nAnswer:")
+        prompts.append(f"Question: {question}\nAnswer:")
         gold_answers.append(answer)
 
     for i in tqdm(range(0, total, BATCH_SIZE), desc="Evaluating Accuracy"):
@@ -211,7 +211,7 @@ def evaluate_rouge(gsm8k_test):
     for ex in gsm8k_test:
         question = ex['question']
         answer = ex['answer']
-        prompts.append(f"Question: {question} At the end, give your final numeric answer in the format '#### answer'.\nAnswer:")
+        prompts.append(f"Question: {question}\nAnswer:")
         gold_answers.append(answer)
 
     for i in tqdm(range(0, total, BATCH_SIZE), desc="Evaluating ROUGE"):
