@@ -6,10 +6,10 @@ from neural_controllers import NeuralController
 from datasets import load_dataset
 import numpy as np
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '3,4'
+os.environ['CUDA_VISIBLE_DEVICES'] = '4'
 
-RANDOM_SEED = 44
-MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
+RANDOM_SEED = 42
+MODEL_ID = "google/gemma-2-9b-it"
 
 def prepare_dataset(gsm8k_dataset, controller):
     sampled_dataset = gsm8k_dataset.shuffle(seed=RANDOM_SEED).select(range(1000))
@@ -21,6 +21,7 @@ def prepare_dataset(gsm8k_dataset, controller):
     training_dataset = [
         {'prompt': controller.format_prompt(ex['question']) + assistant_tag + "\nAnswer: ", 'label': 0} for ex in sampled_dataset
     ]
+    # Prompt based on the paper for CoT
     training_dataset += [
         {'prompt': controller.format_prompt(ex['question']) + "Please think through your reasoning step by step before answering." + assistant_tag + "\nAnswer: ", 'label': 1}
         for ex in sampled_dataset

@@ -15,10 +15,10 @@ from rfm_train import setup_model
 
 # Word Count dataset is from https://github.com/brianpeiris/llm-basic-letter-counting-benchmark/blob/main/words.json
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '5,7'
+os.environ['CUDA_VISIBLE_DEVICES'] = '2'
 
-RANDOM_SEED = 42
-MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
+RANDOM_SEED = 50
+MODEL_ID = "google/gemma-2-9b-it"
 ANS_RE = re.compile(r"#### (\-?[0-9\.\,]+)")
 
 def process_json_file(file_path):
@@ -99,7 +99,7 @@ def evaluate_accuracy(gsm8k_test, controller, processor=None):
     for ex in gsm8k_test:
         question = ex['question']
         answer = extract_reference_answer(ex['answer'])
-        prompts.append(f"Question: {question}  At the end, give your final numeric answer in the format '#### answer'.\nAnswer:")
+        prompts.append(f"Question: {question} and put the answer in a box.\nAnswer:")
         gold_answers.append(answer)
 
     for i in tqdm(range(0, total), desc="Evaluating Accuracy for RFM..."):
@@ -107,7 +107,7 @@ def evaluate_accuracy(gsm8k_test, controller, processor=None):
         batch_answers = gold_answers[i]
 
         # Generate answers for the batch
-        control_layers = list(range(-1, -31, -1)) # Control the last 40 layers
+        control_layers = list(range(-1, -27, -1)) # All layers
         if processor is not None:
             response = controller.generate(prompt, max_new_tokens=256, control_coef=0.2, layers_to_control=control_layers, do_sample=False, logits_processor=[processor])
         else:
@@ -164,9 +164,9 @@ def evaluate_all(gsm8k_test, controller, processor=None):
         # Generate answers for the batch
         control_layers = list(range(-1, -31, -1))
         if processor is not None:
-            response = controller.generate(prompt, max_new_tokens=256, control_coef=0.2, layers_to_control=control_layers, do_sample=False, logits_processor=[processor])
+            response = controller.generate(prompt, max_new_tokens=450, control_coef=0.2, layers_to_control=control_layers, do_sample=False, logits_processor=[processor])
         else:
-            response = controller.generate(prompt, max_new_tokens=256, control_coef=0.2, layers_to_control=control_layers, do_sample=False)
+            response = controller.generate(prompt, max_new_tokens=450, control_coef=0.2, layers_to_control=control_layers, do_sample=False)
         print(response)
 
         pred = response.strip()
@@ -264,7 +264,7 @@ if __name__ == "__main__":
 
     class SuppressEosLogitsProcessor(torch.nn.Module):
         def __call__(self, input_ids, scores):
-            scores[:, eos_token_id] = -1e10
+            scores[:, eos_token_id] = -1e9
             return scores
 
     # Load the controller
@@ -284,8 +284,5 @@ if __name__ == "__main__":
     dataset_inputs = [ex['question'] for ex in dataset]
     
     # Evaluate accuracy
-    accuracy = evaluate_accuracy(gsm8k_test_sample, controller)
+    accuracy = evaluate_accuracy(gsm8k_test_sample, controller, SuppressEosLogitsProcessor())
     print(f"RFM Accuracy on GSM8K: {accuracy:.4f}")
-
-    # Evaluate all metrics
-    evaluate_all(gsm8k_test_sample, controller)

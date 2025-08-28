@@ -13,7 +13,7 @@ import numpy as np
 os.environ['CUDA_VISIBLE_DEVICES'] = '3,4'
 
 # Configuration
-MODEL_ID = "Qwen/Qwen2-7B-Instruct"
+MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
 BATCH_SIZE = 8
 ANS_RE = re.compile(r"#### (\-?[0-9\.\,]+)")
 
