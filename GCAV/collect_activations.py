@@ -13,7 +13,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 import numpy as np
 from vllm import LLM, SamplingParams
 
-os.environ['CUDA_VISIBLE_DEVICES'] = "2,4"  # Adjust based on your available GPUs'
+os.environ['CUDA_VISIBLE_DEVICES'] = "3,4"  # Adjust based on your available GPUs'
 
 def trim_output(output):
     instruction_prefix = "Answer the following question"
@@ -80,7 +80,7 @@ def main():
     # Prepare dataset
     test_data = []
     data = load_dataset("gsm8k", "main", split="test")
-    data = data.shuffle(seed=42).select(range(10))  # Use a subset for testing
+    data = data.shuffle(seed=42).select(range(1000))  # Use a subset for testing
     for example in tqdm(data, desc="Processing examples"):
         answer = example["answer"].split("####")[1].strip()
         answer =  re.sub(r"(\d),(\d)", r"\1\2", answer)
@@ -112,7 +112,7 @@ def main():
     # Generate answers
     torch_dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8 else torch.float32
 
-    model = LLM(args.model_id, dtype=torch_dtype, trust_remote_code=True, tensor_parallel_size=torch.cuda.device_count(), max_model_len=512+2000, download_dir="/opt/huggingface_cache", gpu_memory_utilization=0.75)
+    model = LLM(args.model_id, dtype=torch_dtype, trust_remote_code=True, tensor_parallel_size=torch.cuda.device_count(), max_model_len=512+2000, download_dir="/opt/huggingface_cache", gpu_memory_utilization=0.5)
     params = SamplingParams(temperature=0.0, max_tokens=1000, top_p=1.0, top_k=-1, stop=None)
     
     print("Model loaded successfully.")
@@ -173,7 +173,7 @@ def main():
 
     bs = 8
     with torch.inference_mode():
-        for start in range(0, N, bs):
+        for start in tqdm(range(0, N, bs), desc="Collecting activations"):
             end = min(start + bs, N)
             in_batch = {
                 "input_ids": enc_all["input_ids"][start:end].to(hf_device),
@@ -184,10 +184,8 @@ def main():
                 pooled = pool_last_prompt_token(out.hidden_states, in_batch["attention_mask"], li)  # [B,H]
                 layer_arrays[li - 1][start:end, :] = pooled.cpu().numpy()
 
-    # ADDED: save per-layer arrays
     for li in range(1, num_layers + 1):
         np.save(os.path.join(output_dir, f"layer_{li:02d}.npy"), layer_arrays[li - 1])
-    # ADDED: tiny meta file
     with open(os.path.join(output_dir, "activations_meta.json"), "w") as f:
         json.dump({
             "pooling": "last_prompt_token",

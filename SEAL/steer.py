@@ -17,7 +17,7 @@ from modeling_gemma2 import Gemma2ForCausalLM
 from tqdm import trange
 
 MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
-os.environ['CUDA_VISIBLE_DEVICES'] = "2,3"
+os.environ['CUDA_VISIBLE_DEVICES'] = "0,6"
 
 import torch._dynamo
 torch._dynamo.config.capture_dynamic_output_shape_ops = True
@@ -90,14 +90,14 @@ def main():
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
     # Prepare prompts
-    prefix = "Answer the following questions. You should think step-by-step and put your final answer within \\boxed{}.\n"
+    prefix = "Answer the following questions. Put your final answer within \\boxed{}.\n"
     prompts = []
     for i, example in tqdm(enumerate(test_data), total=len(test_data), desc="Preparing prompts"):
         prompt = prefix + "Question: " + example["question"].strip() + "\nAnswer: "
         if "Llama" in MODEL_ID:
             messages = [{"role": "system", "content": prefix}, {"role": "user", "content": "Question: " + example["question"].strip()}]
         else:
-            messages = [{"role": "user", "content": example["question"].strip()}]
+            messages = [{"role": "user", "content": prefix + example["question"].strip()}]
         prompt = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
         prompts.append(prompt)
     

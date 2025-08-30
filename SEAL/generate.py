@@ -13,7 +13,7 @@ import numpy as np
 from vllm import LLM, SamplingParams
 
 MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
-os.environ['CUDA_VISIBLE_DEVICES'] = "2,3"  # Adjust based on your available GPUs'
+os.environ['CUDA_VISIBLE_DEVICES'] = "0,6"  # Adjust based on your available GPUs'
 
 def trim_output(output):
     instruction_prefix = "Answer the following question"
@@ -64,40 +64,12 @@ def main():
     # Generate answers
     torch_dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8 else torch.float32
 
-    # model = AutoModelForCausalLM.from_pretrained(
-    #     MODEL_ID,
-    #     torch_dtype=torch_dtype,
-    #     device_map="auto",
-    #     cache_dir="/opt/huggingface_cache",
-    #     trust_remote_code=True,
-    # )
     model = LLM(MODEL_ID, dtype=torch_dtype, trust_remote_code=True, tensor_parallel_size=torch.cuda.device_count(), max_model_len=512+2000, download_dir="/opt/huggingface_cache", gpu_memory_utilization=0.60)
     params = SamplingParams(temperature=0.0, max_tokens=1000, top_p=1.0, top_k=-1, stop=None)
     
     print("Model loaded successfully.")
     outputs = model.generate(prompts, params)
     decoded_outputs = [trim_output(output.outputs[0].text) for output in outputs]
-    
-    # inputs = tokenizer(prompts, return_tensors="pt", padding=True, truncation=True).to(model.device)
-    # batch_size = 8
-    # all_outputs = []
-    # for i in tqdm(range(0, len(prompts), batch_size), desc="Generating Output..."):
-    #         batch_prompts = prompts[i:i+batch_size]
-    #         inputs = tokenizer(batch_prompts, return_tensors="pt", padding=True, truncation=True, max_length=2048).to(model.device)
-    #         generated_tokens = model.generate(
-    #             **inputs,
-    #             max_new_tokens=512,
-    #             do_sample=False,
-    #             use_cache=True,
-    #             pad_token_id=tokenizer.eos_token_id,
-    #         )
-    #         input_lengths = [len(x) for x in inputs['input_ids']]
-    #         for j, output in enumerate(generated_tokens):
-    #             gen_only = output[input_lengths[j]:]
-    #             text = tokenizer.decode(gen_only, skip_special_tokens=True)
-    #             all_outputs.append(trim_output(text))
-    #         torch.cuda.empty_cache()
-
 
     print("Generation completed.")
 
