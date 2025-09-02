@@ -210,7 +210,6 @@ def evaluate_bleu(model, tokenizer, gsm8k_test):
     results = bleu_metric.compute(predictions=predictions, references=[[ref] for ref in references])
     return results['bleu']
 
-# TODO: Try again for Gemma-2-9B-it for all metrics other than accuracy
 def evaluate_rouge(gsm8k_test):
     """
     Evaluate the Rouge score of the model on the GSM8K dataset.
