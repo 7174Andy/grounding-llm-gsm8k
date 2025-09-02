@@ -2,6 +2,7 @@ import os
 from tqdm import tqdm
 import re
 import argparse
+import json
 
 import torch
 import evaluate
@@ -9,10 +10,10 @@ from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import numpy as np
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '1,7'
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 
 # Configuration
-MODEL_ID = "Qwen/Qwen2-7B-Instruct"
+MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
 BATCH_SIZE = 8
 ANS_RE = re.compile(r"#### (\-?[0-9\.\,]+)")
 
@@ -111,13 +112,14 @@ def generate_samples(model, tokenizer, device, gsm8k_test, len=10):
             f.write(f"Correct: {correct}\n")
             f.write("----------------------\n")
 
-def evaluate_accuracy(model, tokenizer, device, gsm8k_test):
+def evaluate_accuracy(model, tokenizer, gsm8k_test):
     """
     Evaluate the accuracy of the model on the GSM8K dataset.
     """
     accuracy_metric = evaluate.load("accuracy")
 
     predictions = []
+    model_generated = []
     references = []
 
     total = len(gsm8k_test)
@@ -131,6 +133,8 @@ def evaluate_accuracy(model, tokenizer, device, gsm8k_test):
         prompts.append(f"Question: {question}Answer the question step by step. At the end, give your final numeric answer in the format '#### answer'.\nAnswer:")
         gold_answers.append(answer)
 
+    json_data = []
+
     for i in tqdm(range(0, total, BATCH_SIZE), desc="Evaluating Accuracy"):
         batch_prompts = prompts[i:i + BATCH_SIZE]
         batch_answers = gold_answers[i:i + BATCH_SIZE]
@@ -141,7 +145,8 @@ def evaluate_accuracy(model, tokenizer, device, gsm8k_test):
         for response, reference in zip(responses, batch_answers):
             pred = extract_final_number(response)
             predictions.append(pred if pred is not None else "")
-            references.append(reference)
+            references.append(reference if reference is not None else "")
+            model_generated.append(response)
 
     # Filter out None values
     filtered = [(p, r) for p, r in zip(predictions, references) if p is not None and r is not None]
@@ -154,9 +159,21 @@ def evaluate_accuracy(model, tokenizer, device, gsm8k_test):
     # Compute accuracy
     correct = sum(p == r for p, r in zip(predictions, references))
     accuracy = correct / len(predictions)
+
+    for prompt, prediction, model_gen in zip(prompts, predictions, model_generated):
+        json_data.append({
+            "prompt": prompt,
+            "pred": prediction,
+            "model_generation": model_gen
+        })
+
+    # Save predictions and references to a JSON file
+    file_name = MODEL_ID.replace("/", "_")
+    with open(f"gsm8k_chain_of_thought_evaluation_{file_name}.json", "w") as f:
+        json.dump(json_data, f, indent=4)
     return accuracy
 
-def evaluate_bleu(model, tokenizer, device, gsm8k_test):
+def evaluate_bleu(model, tokenizer, gsm8k_test):
     """
     Evaluate the BLEU score of the model on the GSM8K dataset.
     """
@@ -231,7 +248,7 @@ def evaluate_rouge(gsm8k_test):
     results = rouge_metric.compute(predictions=predictions, references=references)
     return results
 
-def evaluate_bert(model, tokenizer, device, gsm8k_test):
+def evaluate_bert(model, tokenizer, gsm8k_test):
     """
     Evaluate the BERT score of the model on the GSM8K dataset.
     """
@@ -268,7 +285,7 @@ def evaluate_bert(model, tokenizer, device, gsm8k_test):
     results = bert_metric.compute(predictions=predictions, references=references, lang="en")
     return results
 
-def evaluate_all(model, tokenizer, device, gsm8k_test):
+def evaluate_all(model, tokenizer, gsm8k_test):
     """
     Evaluate all metrics on the GSM8K dataset.
     """
@@ -341,11 +358,11 @@ if __name__ == "__main__":
     print(f"Starting evaluation using metric: {args.metric}")
     match args.metric:
         case 'accuracy':
-            results = evaluate_accuracy(model, tokenizer, device, gsm8k_test_sample)
+            results = evaluate_accuracy(model, tokenizer, gsm8k_test_sample)
             print("Accuracy evaluation completed.")
             print(f"Accuracy: {results:.4f}")
         case 'bleu':
-            results = evaluate_bleu(model, tokenizer, device, gsm8k_test_sample)
+            results = evaluate_bleu(model, tokenizer, gsm8k_test_sample)
             print("BLEU evaluation completed.")
             print(f"BLEU score: {results:.4f}")
         case 'rouge':
@@ -354,12 +371,12 @@ if __name__ == "__main__":
             for k, v in results.items():
                 print(f"{k}: {v:.4f}")
         case 'bert':
-            results = evaluate_bert(model, tokenizer, device, gsm8k_test_sample)
+            results = evaluate_bert(model, tokenizer, gsm8k_test_sample)
             print("BERT evaluation completed.")
             for k, v in results.items():
                 print(f"{k}: {np.mean(v):.4f}")
         case 'all':
-            results = evaluate_all(model, tokenizer, device, gsm8k_test_sample)
+            results = evaluate_all(model, tokenizer, gsm8k_test_sample)
             print("All evaluations completed.")
             print(f"BLEU: {results['bleu']:.4f}")
             for k, v in results['rouge'].items():
