@@ -1,0 +1,15 @@
+Accuracy Results:
+  accuracy: 0.5833333333333334
+  total: 132
+  correct: 77
+Some weights of RobertaModel were not initialized from the model checkpoint at roberta-large and are newly initialized: ['pooler.dense.bias', 'pooler.dense.weight']
+You should probably TRAIN this model on a down-stream task to be able to use it for predictions and inference.
+BERTScore Results:
+  bert_precision: 0.01370544545352459
+  bert_recall: 0.22932884097099304
+  bert_f1: 0.1198057159781456
+ROUGE Results:
+  rougeL: 0.32674434713244155
+BLEU Results:
+  bleu: 0.07719728873660453
+Evaluation completed.

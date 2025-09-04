@@ -12,8 +12,8 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 import numpy as np
 from vllm import LLM, SamplingParams
 
-MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
-os.environ['CUDA_VISIBLE_DEVICES'] = "0,6"  # Adjust based on your available GPUs'
+MODEL_ID = "Qwen/Qwen2-7B-Instruct"
+os.environ['CUDA_VISIBLE_DEVICES'] = "0,1"  # Adjust based on your available GPUs'
 
 def trim_output(output):
     instruction_prefix = "Answer the following question"
@@ -48,16 +48,20 @@ def main():
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
     
-    prefix = "Answer the following questions. You should think step-by-step and put your final answer within \\boxed{}.\n"
+    prefix = "Answer the following questions with step by step reasoning including transition and reflection thoughts if needed, then state your final answer as 'Answer: <NUMBER>' on a new line.\n\n"
     prompts = []
     for i, example in enumerate(test_data):
-        prompt = prefix + "Question: " + example["question"].strip()+"\nAnswer: "
+        prompt = prefix + example["question"].strip()
 
         # Apply chat template for Llama-3.1
         if "Llama" in MODEL_ID:
-            messages = [{"role": "system", "content": prefix}, {"role": "user", "content": "Question: " + example["question"].strip()}]
+            messages = [{"role": "system", "content": "You are a helpful assistant"},
+            {"role": "user", "content": prompt},
+        ]
+        elif "qwen" in MODEL_ID.lower():
+            messages = [{"role": "system", "content": "You are a helpful assistant."}, {"role": "user", "content": prompt}]
         else:
-            messages = [{"role": "user", "content": example["question"].strip()}]
+            messages = [{"role": "user", "content": prompt}]
         prompt = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
         prompts.append(prompt)
 

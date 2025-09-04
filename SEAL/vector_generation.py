@@ -2,7 +2,7 @@ import torch
 import os
 import tqdm
 
-MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
+MODEL_ID = "Qwen/Qwen2-7B-Instruct"
 
 def load_data(data_dir, prefixs, layer_num=29, max_examples=None):
     data_paths = [os.path.join(data_dir, "hidden.pt")]

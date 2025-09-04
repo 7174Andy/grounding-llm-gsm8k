@@ -13,7 +13,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 import numpy as np
 from vllm import LLM, SamplingParams
 
-os.environ['CUDA_VISIBLE_DEVICES'] = "3,4"  # Adjust based on your available GPUs'
+os.environ['CUDA_VISIBLE_DEVICES'] = "0,1"  # Adjust based on your available GPUs'
 
 def trim_output(output):
     instruction_prefix = "Answer the following question"
@@ -112,7 +112,7 @@ def main():
     # Generate answers
     torch_dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8 else torch.float32
 
-    model = LLM(args.model_id, dtype=torch_dtype, trust_remote_code=True, tensor_parallel_size=torch.cuda.device_count(), max_model_len=512+2000, download_dir="/opt/huggingface_cache", gpu_memory_utilization=0.5)
+    model = LLM(args.model_id, dtype=torch_dtype, trust_remote_code=True, tensor_parallel_size=torch.cuda.device_count(), max_model_len=512+2000, download_dir="/opt/huggingface_cache", gpu_memory_utilization=0.65)
     params = SamplingParams(temperature=0.0, max_tokens=1000, top_p=1.0, top_k=-1, stop=None)
     
     print("Model loaded successfully.")

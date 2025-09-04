@@ -9,7 +9,7 @@ import numpy as np
 os.environ['CUDA_VISIBLE_DEVICES'] = '4'
 
 RANDOM_SEED = 42
-MODEL_ID = "google/gemma-2-9b-it"
+MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
 
 def prepare_dataset(gsm8k_dataset, controller):
     sampled_dataset = gsm8k_dataset.shuffle(seed=RANDOM_SEED).select(range(1000))

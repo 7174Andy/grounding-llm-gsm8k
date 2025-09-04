@@ -16,7 +16,7 @@ from modeling_qwen2 import Qwen2ForCausalLM
 from modeling_gemma2 import Gemma2ForCausalLM
 from tqdm import trange
 
-MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
+MODEL_ID = "Qwen/Qwen2-7B-Instruct"
 os.environ['CUDA_VISIBLE_DEVICES'] = "0,6"
 
 import torch._dynamo
@@ -90,14 +90,17 @@ def main():
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
     # Prepare prompts
-    prefix = "Answer the following questions. Put your final answer within \\boxed{}.\n"
+    prefix = "Answer the following question. State your final answer as 'Answer: <NUMBER>' on a new line. Let's think step by step.\n\n"
     prompts = []
     for i, example in tqdm(enumerate(test_data), total=len(test_data), desc="Preparing prompts"):
-        prompt = prefix + "Question: " + example["question"].strip() + "\nAnswer: "
+        prompt = prefix + example["question"].strip()
         if "Llama" in MODEL_ID:
-            messages = [{"role": "system", "content": prefix}, {"role": "user", "content": "Question: " + example["question"].strip()}]
+            messages = [{"role": "system", "content": "You are a helpful assistant"},
+                        {"role": "user", "content": prompt}]
+        elif "qwen" in MODEL_ID.lower():
+            messages = [{"role": "system", "content": "You are a helpful assistant."}, {"role": "user", "content": prompt}]
         else:
-            messages = [{"role": "user", "content": prefix + example["question"].strip()}]
+            messages = [{"role": "user", "content": prompt}]
         prompt = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
         prompts.append(prompt)
     

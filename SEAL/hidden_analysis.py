@@ -4,7 +4,7 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from tqdm import tqdm
 
-MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
+MODEL_ID = "Qwen/Qwen2-7B-Instruct"
 os.environ['CUDA_VISIBLE_DEVICES'] = '3,4'
 
 def generate_index(text, tokenizer, split_id, think_only=True):

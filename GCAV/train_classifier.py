@@ -45,7 +45,7 @@ def main():
      # Fixed split
     idx = np.arange(len(y))
     tr_idx, va_idx, y_tr, y_va = train_test_split(
-        idx, y, test_size=args.val_size, random_state=42, stratify=y
+        idx, y, test_size=0.2, random_state=42, stratify=y
     )
 
     cav_dir = data_path / "CAV"

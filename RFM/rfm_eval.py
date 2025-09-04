@@ -18,7 +18,7 @@ from rfm_train import setup_model
 os.environ['CUDA_VISIBLE_DEVICES'] = '2'
 
 RANDOM_SEED = 50
-MODEL_ID = "google/gemma-2-9b-it"
+MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
 ANS_RE = re.compile(r"#### (\-?[0-9\.\,]+)")
 
 def process_json_file(file_path):
@@ -99,7 +99,7 @@ def evaluate_accuracy(gsm8k_test, controller, processor=None):
     for ex in gsm8k_test:
         question = ex['question']
         answer = extract_reference_answer(ex['answer'])
-        prompts.append(f"Question: {question} and put the answer in a box.\nAnswer:")
+        prompts.append(f"{question} and put the answer in a box.")
         gold_answers.append(answer)
 
     for i in tqdm(range(0, total), desc="Evaluating Accuracy for RFM..."):
