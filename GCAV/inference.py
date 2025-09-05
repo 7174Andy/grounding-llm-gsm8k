@@ -3,9 +3,32 @@ import re, numpy as np, torch
 from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from datasets import load_dataset
+import os
+from check import preflight_verify_cavs, cav_doctor
+
+os.environ['CUDA_VISIBLE_DEVICES'] = "0,2"
 
 def sigmoid(x): return 1 / (1 + torch.exp(-x))
 def logit(p):   return torch.log(p/(1-p))
+
+def load_probe(path: str):
+    """Load (w, b) from .npz/.npy in several common formats."""
+    x = np.load(path, allow_pickle=True)
+    # Case A: zipped dict (.npz)
+    if isinstance(x, np.lib.npyio.NpzFile):
+        return x["w"], float(x["b"])
+    # Case B: structured array with named fields
+    if hasattr(x, "dtype") and getattr(x.dtype, "names", None) and {"w", "b"}.issubset(x.dtype.names):
+        w = x["w"]
+        b = x["b"]
+        # handle 0-d object scalars
+        if getattr(w, "shape", ()) == () and hasattr(w, "item"): w = w.item()
+        if getattr(b, "shape", ()) == () and hasattr(b, "item"): b = b.item()
+        return np.asarray(w), float(b)
+    # Case C: flat vector [w..., b]
+    if x.ndim == 1 and x.size >= 2:
+        return x[:-1], float(x[-1])
+    raise ValueError(f"Unrecognized probe format for {path!r}")
 
 class AdaptiveCAVSteerer:
     """
@@ -88,7 +111,7 @@ class AdaptiveCAVSteerer:
             except: pass
         self.hooks = []
 
-def run_demo(model_id, probes_npz: dict):
+def run_demo(model_id, probes_paths: dict):
     tok = AutoTokenizer.from_pretrained(model_id, use_fast=True, trust_remote_code=True)
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
@@ -97,11 +120,22 @@ def run_demo(model_id, probes_npz: dict):
         model_id,
         device_map="auto",
         torch_dtype=(torch.bfloat16 if torch.cuda.is_available() else None),
-        trust_remote_code=True
+        trust_remote_code=True, 
+        cache_dir="/opt/huggingface_cache",
     ).eval()
 
+    print("hidden_size:", model.config.hidden_size)  # expect 3584 for gemma-2-9b-it
+
+
     # Load (w,b) per layer
-    layer_to_wb = {L: {"w": np.load(path)["w"], "b": float(np.load(path)["b"])} for L, path in probes_npz.items()}
+    layer_to_wb = {
+        L: (lambda wb=load_probe(path): {"w": wb[0], "b": wb[1]})()
+        for L, path in probes_paths.items()
+    }
+
+    print(f"Shape check of loaded CAVs:")
+    for L, p in layer_to_wb.items():
+        print(f"[Layer {L}] w.shape = {p['w'].shape}, b.shape = {p['b']}")
 
     # Choose amplify/suppress + target prob p0
     steerer = AdaptiveCAVSteerer(model, layer_to_wb, mode="amplify", p0=0.7, eps_cap=0.8, steer_prompt=False)
@@ -110,7 +144,7 @@ def run_demo(model_id, probes_npz: dict):
     # Prepare test dataset
     test_data = []
     dataset = load_dataset("gsm8k", "main", split="test")
-    data = data.shuffle(seed=42).select(range(132))
+    data = dataset.shuffle(seed=42).select(range(132))
     for example in tqdm(data, desc="Processing examples"):
         answer = example["answer"].split("####")[1].strip()
         answer =  re.sub(r"(\d),(\d)", r"\1\2", answer)
@@ -142,5 +176,4 @@ def run_demo(model_id, probes_npz: dict):
     print(text)
 
 if __name__ == "__main__":
-    # Example: steer at layer 10 using probes/layer_10.npz
-    run_demo("google/gemma-2-9b-it", {10: "probes/layer_10.npz"})
+    run_demo("google/gemma-2-9b-it", {10: "gemma-2-9b-it_dataset/CAV/cav_layer_10.npy"})
