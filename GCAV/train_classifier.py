@@ -7,6 +7,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score, accuracy_score
 from sklearn.preprocessing import StandardScaler
+from tqdm import tqdm
 
 def load_data(file_path):
     try:
@@ -52,7 +53,7 @@ def main():
     cav_dir.mkdir(exist_ok=True)
 
     results = []
-    for layer in layer_files:
+    for layer in tqdm(layer_files, desc="Training CAVs"):
         X = np.load(layer)
         clf = train_one_layer(X[tr_idx], y_tr)
         X_va = X[va_idx]
@@ -61,12 +62,19 @@ def main():
         acc = accuracy_score(y_va, proba > 0.5)
 
         w = clf.coef_.ravel()
+        b = float(clf.intercept_[0])
+        print(f"Shape of w: {w.shape}, expected: ({X.shape[1],})")
         v = w / (np.linalg.norm(w) + 1e-12)
         # flip so positives score higher
         if (X[va_idx][y_va==1] @ v).mean() < (X[va_idx][y_va==0] @ v).mean():
             v = -v
+        out = {
+            "w": w.astype(np.float32),
+            "b": np.float32(b),
+            "v": v.astype(np.float32),
+        }
 
-        np.save(cav_dir / layer.name.replace("layer_", "cav_layer_"), v.astype(np.float32))
+        np.save(cav_dir / layer.name.replace("layer_", "cav_layer_"), out)
         results.append({"layer": layer.name, "auc": float(auc), "acc": float(acc)})
 
     pd.DataFrame(results).sort_values("auc", ascending=False).to_csv(cav_dir / "results.csv")

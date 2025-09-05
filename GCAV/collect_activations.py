@@ -13,7 +13,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 import numpy as np
 from vllm import LLM, SamplingParams
 
-os.environ['CUDA_VISIBLE_DEVICES'] = "0,1"  # Adjust based on your available GPUs'
+os.environ['CUDA_VISIBLE_DEVICES'] = "0,1"
 
 def trim_output(output):
     instruction_prefix = "Answer the following question"
@@ -92,6 +92,7 @@ def main():
     
     # Setup Model
     tokenizer = AutoTokenizer.from_pretrained(args.model_id, trust_remote_code=True, padding_side="left")
+    tokenizer.truncation_side = "left"
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
