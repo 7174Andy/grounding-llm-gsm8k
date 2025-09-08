@@ -1,33 +1,81 @@
 # steer_adaptive.py
+import argparse
 import re, numpy as np, torch
 from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from datasets import load_dataset
 import os
-from check import preflight_verify_cavs, cav_doctor
+import json
 
-os.environ['CUDA_VISIBLE_DEVICES'] = "0,2"
+os.environ['CUDA_VISIBLE_DEVICES'] = "1,2"
 
 def sigmoid(x): return 1 / (1 + torch.exp(-x))
 def logit(p):   return torch.log(p/(1-p))
 
-def load_probe(path: str):
-    """Load (w, b) from .npz/.npy in several common formats."""
+def extract_box(pred_str):
+    ans = pred_str.split("boxed")[-1]
+    if len(ans) == 0:
+        return ""
+    elif ans[0] == "{":
+        stack = 1
+        a = ""
+        for c in ans[1:]:
+            if c == "{":
+                stack += 1
+                a += c
+            elif c == "}":
+                stack -= 1
+                if stack == 0:
+                    break
+                a += c
+            else:
+                a += c
+    else:
+        a = ans.split("$")[0].strip()
+
+    return a
+
+def extract_last_number(pred_str):
+    o = re.sub(r"(\d),(\d)", r"\1\2", pred_str)
+    numbers = re.findall(r"[-+]?\d*\.\d+|\d+", o)
+    if numbers:
+        ans = numbers[-1]
+    else:
+        ans = None
+    return ans
+
+def load_probe(path: str, return_v: bool = False):
     x = np.load(path, allow_pickle=True)
+
     # Case A: zipped dict (.npz)
     if isinstance(x, np.lib.npyio.NpzFile):
-        return x["w"], float(x["b"])
-    # Case B: structured array with named fields
+        w = np.asarray(x["w"])
+        b = float(np.asarray(x["b"]))
+        if return_v and "v" in x:
+            return w, b, np.asarray(x["v"])
+        return w, b
+
+    # Case B: 0-D object array containing a dict (your current saver)
+    if isinstance(x, np.ndarray) and x.dtype == object and x.shape == ():
+        d = x.item()  # unwrap dict
+        w = np.asarray(d["w"])
+        b = float(d["b"])
+        if return_v and "v" in d:
+            return w, b, np.asarray(d["v"])
+        return w, b
+
+    # Case C: structured array with named fields
     if hasattr(x, "dtype") and getattr(x.dtype, "names", None) and {"w", "b"}.issubset(x.dtype.names):
-        w = x["w"]
-        b = x["b"]
-        # handle 0-d object scalars
-        if getattr(w, "shape", ()) == () and hasattr(w, "item"): w = w.item()
-        if getattr(b, "shape", ()) == () and hasattr(b, "item"): b = b.item()
-        return np.asarray(w), float(b)
-    # Case C: flat vector [w..., b]
+        w = np.asarray(x["w"])
+        b = float(np.asarray(x["b"]))
+        if return_v and "v" in x.dtype.names:
+            return w, b, np.asarray(x["v"])
+        return w, b
+
+    # Case D: flat vector [w..., b]
     if x.ndim == 1 and x.size >= 2:
-        return x[:-1], float(x[-1])
+        return x[:-1], float(x[-1]) if not return_v else (x[:-1], float(x[-1]), None)
+
     raise ValueError(f"Unrecognized probe format for {path!r}")
 
 class AdaptiveCAVSteerer:
@@ -150,30 +198,45 @@ def run_demo(model_id, probes_paths: dict):
         answer =  re.sub(r"(\d),(\d)", r"\1\2", answer)
         test_data.append({
             "question": example["question"],
-            "answer": example["answer"].split("####")[0].strip(),
+            "solution": example["answer"].split("####")[0].strip(),
             "gt": answer,
         })
 
     prompts = []
     prefix = "Answer the following questions. You should think step-by-step and put your final answer within \\boxed{}.\n"
     prompts = []
-    for i, example in tqdm(enumerate(test_data), desc="Preparing Prompts..."):
-        prompt = prefix + "Question: " + example["question"].strip()+"\nAnswer: "
+    for example in tqdm(test_data, desc="Preparing Prompts..."):
+        prompt = prefix + "Question: " + example["question"].strip()+"\n"
 
         # Apply chat template for Llama-3.1
         if "Llama" in model_id:
             messages = [{"role": "system", "content": prefix}, {"role": "user", "content": "Question: " + example["question"].strip()}]
         else:
-            messages = [{"role": "user", "content":prompt}]
+            messages = [{"role": "user", "content": prompt}]
         prompt = tok.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
         prompts.append(prompt)
 
-    enc = tok(prompts, return_tensors="pt", padding=True, truncation=True).to(next(model.parameters()).device)
-    out = model.generate(**enc, max_new_tokens=512, do_sample=False, use_cache=True)
-    text = tok.decode(out[0], skip_special_tokens=True)
+    for i, prompt in tqdm(enumerate(prompts), desc="Generating answers...", total=len(prompts)):
+        enc = tok(prompt, return_tensors="pt", padding=True, truncation=True).to(next(model.parameters()).device)
+        out = model.generate(**enc, max_new_tokens=512, do_sample=False, use_cache=True)
+        text = tok.decode(out[0], skip_special_tokens=True)
+
+        test_data[i]["pred"] = text
+        test_data[i]["generated_answer"] = extract_last_number(text)
+        print(f"Example {i}: {test_data[i]['question']} {test_data[i]['gt']}")
+        print(f"Prediction:\n{text}\n")
+
+    # Save results
+    with open("steered_gsm8k_results.json", "w") as f:
+        for ex in test_data:
+            f.write(json.dumps(ex) + "\n")
 
     steerer.disable()
-    print(text)
+    print("Demo complete.")
 
 if __name__ == "__main__":
-    run_demo("google/gemma-2-9b-it", {10: "gemma-2-9b-it_dataset/CAV/cav_layer_10.npy"})
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model_id", type=str, help="Model ID to use for generation")
+    args = parser.parse_args()
+    model_name_for_dir = args.model_id.split("/")[-1]
+    run_demo(args.model_id, {10: f"{model_name_for_dir}_dataset/CAV/cav_layer_10.npy"})

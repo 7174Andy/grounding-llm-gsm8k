@@ -13,7 +13,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 import numpy as np
 from vllm import LLM, SamplingParams
 
-os.environ['CUDA_VISIBLE_DEVICES'] = "0,1"
+os.environ['CUDA_VISIBLE_DEVICES'] = "1,2"
 
 def trim_output(output):
     instruction_prefix = "Answer the following question"
