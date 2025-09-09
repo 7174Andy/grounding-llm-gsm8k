@@ -239,4 +239,4 @@ if __name__ == "__main__":
     parser.add_argument("--model_id", type=str, help="Model ID to use for generation")
     args = parser.parse_args()
     model_name_for_dir = args.model_id.split("/")[-1]
-    run_demo(args.model_id, {10: f"{model_name_for_dir}_dataset/CAV/cav_layer_10.npy"})
+    run_demo(args.model_id, {10: f"{model_name_for_dir}_dataset/CAV/cav_layer_15.npy"})
